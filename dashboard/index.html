@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Upbit Trading Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --bg2: #181b22; --border: #262a33;
+    --text: #e8e8ea; --text2: #8b909a;
+    --green: #26a69a; --red: #ef5350; --amber: #ffa726; --blue: #42a5f5;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:14px; }
+  header { padding:14px 24px; background:var(--bg2); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  h1 { margin:0; font-size:18px; font-weight:600; }
+  .tabs { display:flex; gap:4px; padding:0 24px; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .tab { padding:10px 16px; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; }
+  .tab.active { color:var(--text); border-bottom-color:var(--blue); }
+  .panel { padding:20px 24px; display:none; }
+  .panel.active { display:block; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:20px; }
+  .stat { background:var(--bg2); padding:14px; border-radius:8px; border:1px solid var(--border); }
+  .stat-label { font-size:12px; color:var(--text2); }
+  .stat-value { font-size:22px; font-weight:600; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; background:var(--bg2); border-radius:8px; overflow:hidden; }
+  th, td { padding:10px 12px; text-align:left; border-bottom:1px solid var(--border); font-size:13px; }
+  th { background:#1e222b; font-weight:500; color:var(--text2); }
+  .positive { color:var(--green); }
+  .negative { color:var(--red); }
+  .mono { font-family:'SF Mono',Monaco,monospace; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500; }
+  .chip-A { background:#26a69a33; color:var(--green); }
+  .chip-B { background:#42a5f533; color:var(--blue); }
+  .chip-C { background:#ffa72633; color:var(--amber); }
+  .chip-D { background:#8b909a33; color:var(--text2); }
+  .range-btns { display:flex; gap:6px; margin-bottom:10px; }
+  .range-btn { padding:6px 12px; background:var(--bg2); border:1px solid var(--border); color:var(--text2); cursor:pointer; border-radius:6px; font-size:12px; }
+  .range-btn.active { background:#42a5f533; color:var(--blue); border-color:var(--blue); }
+  .chart-card { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:20px; }
+  .chart-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .chart-title { font-size:14px; font-weight:500; }
+  .chart-summary { font-size:12px; color:var(--text2); }
+  .chart-summary b { color:var(--text); font-size:14px; }
+  svg.pnl-chart { width:100%; height:260px; display:block; }
+  svg.pnl-chart .grid { stroke:var(--border); stroke-width:1; }
+  svg.pnl-chart .axis-label { fill:var(--text2); font-size:10px; font-family:'SF Mono',Monaco,monospace; }
+  svg.pnl-chart .line-pos { stroke:var(--green); stroke-width:2; fill:none; }
+  svg.pnl-chart .line-neg { stroke:var(--red); stroke-width:2; fill:none; }
+  svg.pnl-chart .area-pos { fill:#26a69a22; }
+  svg.pnl-chart .area-neg { fill:#ef535022; }
+  svg.pnl-chart .zero-line { stroke:var(--text2); stroke-width:1; stroke-dasharray:3,3; opacity:0.5; }
+  .mode-filter { display:flex; gap:6px; align-items:center; }
+  .mode-filter label { font-size:11px; color:var(--text2); }
+  .mode-btn { padding:4px 10px; background:var(--bg2); border:1px solid var(--border); color:var(--text2); cursor:pointer; border-radius:4px; font-size:11px; }
+  .mode-btn.active { background:#42a5f533; color:var(--blue); border-color:var(--blue); }
+  .mode-btn.live.active { background:#ef535033; color:var(--red); border-color:var(--red); }
+  .mode-btn.dry.active { background:#ff980033; color:#ff9800; border-color:#ff9800; }
+  .mode-btn.paper.active { background:#26a69a33; color:var(--green); border-color:var(--green); }
+  /* 로직 설명 페이지 */
+  .logic-doc { max-width:1000px; line-height:1.6; }
+  .logic-doc h2 { font-size:18px; margin:28px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--border); color:var(--text); }
+  .logic-doc h2:first-child { margin-top:0; }
+  .logic-doc h3 { font-size:15px; margin:18px 0 8px; color:var(--blue); }
+  .logic-doc p { margin:8px 0; color:var(--text); }
+  .logic-doc ul, .logic-doc ol { margin:8px 0 8px 20px; padding:0; }
+  .logic-doc li { margin:4px 0; color:var(--text); }
+  .logic-doc code { background:#1e222b; padding:1px 6px; border-radius:3px; font-family:'SF Mono',Monaco,monospace; font-size:12px; color:var(--amber); }
+  .logic-doc .callout { background:var(--bg2); border-left:3px solid var(--blue); padding:10px 14px; margin:12px 0; border-radius:0 6px 6px 0; font-size:13px; color:var(--text2); }
+  .logic-doc .callout.warn { border-left-color:var(--amber); }
+  .logic-doc .callout.danger { border-left-color:var(--red); }
+  .logic-doc .callout b { color:var(--text); }
+  .logic-doc table { margin:10px 0; font-size:12px; }
+  .logic-doc table td, .logic-doc table th { padding:6px 10px; }
+  .logic-doc .flow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:12px 0; }
+  .logic-doc .flow .step { background:var(--bg2); border:1px solid var(--border); padding:8px 12px; border-radius:6px; font-size:12px; }
+  .logic-doc .flow .arrow { color:var(--text2); }
+  .logic-doc .strat-card { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin:10px 0; }
+  .logic-doc .strat-card .strat-name { font-size:14px; font-weight:600; margin-bottom:4px; }
+  .logic-doc .strat-card .strat-sub { font-size:12px; color:var(--text2); margin-bottom:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Upbit Trading System</h1>
+  <div style="display:flex; align-items:center; gap:16px;">
+    <div class="mode-filter" id="modeFilter">
+      <label>모드:</label>
+      <div class="mode-btn active" data-mode="all">전체</div>
+      <div class="mode-btn live" data-mode="live">실거래</div>
+      <div class="mode-btn dry" data-mode="dry">드라이</div>
+      <div class="mode-btn paper" data-mode="paper">페이퍼</div>
+    </div>
+    <div id="lastUpdate" style="font-size:12px; color:var(--text2);">—</div>
+  </div>
+</header>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('overview')">개요</div>
+  <div class="tab" onclick="showTab('positions')">포지션</div>
+  <div class="tab" onclick="showTab('trades')">거래 이력</div>
+  <div class="tab" onclick="showTab('signals')">시그널</div>
+  <div class="tab" onclick="showTab('cycles')">사이클</div>
+  <div class="tab" onclick="showTab('errors')">에러</div>
+  <div class="tab" onclick="showTab('logic')">로직</div>
+</div>
+
+<div id="overview" class="panel active">
+  <div class="stats" id="statsBox"></div>
+  <div class="chart-card">
+    <div class="chart-header">
+      <div>
+        <div class="chart-title">누적 실현 PnL</div>
+        <div class="chart-summary" id="pnlSummary">—</div>
+      </div>
+      <div class="range-btns" id="rangeBtns">
+        <div class="range-btn" data-days="1">1일</div>
+        <div class="range-btn active" data-days="7">7일</div>
+        <div class="range-btn" data-days="30">1달</div>
+        <div class="range-btn" data-days="180">6달</div>
+        <div class="range-btn" data-days="365">1년</div>
+      </div>
+    </div>
+    <svg class="pnl-chart" id="pnlChart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
+  </div>
+  <h3>최근 사이클</h3>
+  <div id="recentCycles"></div>
+</div>
+
+<div id="positions" class="panel">
+  <div id="positionsBox"></div>
+</div>
+
+<div id="trades" class="panel">
+  <div id="tradesBox"></div>
+</div>
+
+<div id="signals" class="panel">
+  <div id="signalsBox"></div>
+</div>
+
+<div id="cycles" class="panel">
+  <div id="cyclesBox"></div>
+</div>
+
+<div id="errors" class="panel">
+  <div id="errorsBox"></div>
+</div>
+
+<div id="logic" class="panel">
+  <div class="logic-doc">
+
+    <h2>1. 전체 흐름</h2>
+    <p>데몬은 <code>60초 주기</code>로 아래 단계를 반복합니다. 단, <b>스크리닝 풀스캔</b>은 API 부하 때문에 <code>3분(180초)마다 1회</code>만 돌고, 다른 사이클은 직전 결과를 캐시로 사용합니다.</p>
+    <div class="flow">
+      <span class="step">1. BTC 레짐 체크</span>
+      <span class="arrow">→</span>
+      <span class="step">2. 포지션 감시 (손절/익절/본전/트레일링/부분익절/스테일)</span>
+      <span class="arrow">→</span>
+      <span class="step">3. 리스크 게이트</span>
+      <span class="arrow">→</span>
+      <span class="step">4. 스크리닝 (3분주기)</span>
+      <span class="arrow">→</span>
+      <span class="step">5. 매수 실행</span>
+      <span class="arrow">→</span>
+      <span class="step">6. DB 저장 (선별)</span>
+    </div>
+    <div class="callout"><b>BTC 레짐 우선</b>: BTC가 bear 레짐이면 <b>모든 매수 차단</b>. 매도(청산)는 계속 진행합니다.</div>
+
+    <h2>2. 스크리닝 — 후보 선별</h2>
+    <p>Upbit KRW 전체 247개 마켓 중 <b>거래대금이 평소보다 급증한 코인</b>만 골라냅니다. 대장주(BTC/ETH 등)는 변동폭이 작아 단타에 부적합해 채널 A(거래대금 상위)는 폐지했습니다.</p>
+
+    <h3>단계</h3>
+    <ol>
+      <li><b>보호/스테이블코인 제외</b> — <code>protected-coins.json</code>, USDT/USDC/DAI 등</li>
+      <li><b>사전필터</b> — 24h 거래대금 ≥ <code>10억원</code> (유동성 함정 방지)</li>
+      <li><b>거래대금 spike 계산</b> — <code>today_value / avg20_value</code> (오늘 거래대금 ÷ 20일 평균)</li>
+      <li><b>채널 B 선정</b> — spike ≥ <code>2.0x</code> 중 상위 <code>25개</code></li>
+      <li><b>signal_engine 평가</b> — 4개 전략 계산 → 등급 A/B만 후보</li>
+      <li><b>스프레드 검사</b> — 0.35% 초과 시 후보 탈락, 0.2% 초과 시 등급 한단계 강등</li>
+    </ol>
+
+    <div class="callout"><b>왜 거래량이 아닌 거래대금?</b> 거래량만 보면 가격 폭락 + 거래 폭증(패닉 매도)까지 잡힘. 거래대금(가격×거래량)은 "실제 돈이 몰리는가"를 반영해 진짜 관심을 측정합니다.</div>
+
+    <h2>3. 4가지 전략 (signal_engine)</h2>
+    <p>각 코인에 대해 4개 전략을 독립적으로 평가. 등급 A/B만 매수 후보가 됩니다.</p>
+
+    <div class="strat-card">
+      <div class="strat-name">VB — Volatility Breakout (변동성 돌파)</div>
+      <div class="strat-sub">Larry Williams 전략. 일봉 기준. 주력 전략.</div>
+      <ul>
+        <li>매수: 오늘 시가 + K × 전일 Range 돌파</li>
+        <li>K 동적 조정: 노이즈비 높을수록 낮아짐 (현재 <code>0.5</code> 고정)</li>
+        <li>게이트: bear 레짐 차단 / RSI &lt; <code>68</code> / 거래량 ≥ 20일평균 × <code>3.0x</code> / ADX 약추세 강등 / Hurst &lt; 0.5 강등</li>
+        <li>손절: <code>-5%</code> · 익절: ATR×4 또는 +6% 중 큰 쪽</li>
+      </ul>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">MB — Momentum Breakout (모멘텀 돌파)</div>
+      <div class="strat-sub">단기 추세 추종. 15분/60분봉 기준.</div>
+      <ul>
+        <li>매수: EMA9 &gt; EMA21 + N봉 고가 돌파 + 거래량 1.5x + RSI 50-75 + MACD 히스토그램 상승</li>
+        <li>손절: ATR 기반 또는 <code>-4%</code> · 익절: ATR×4 또는 +5%</li>
+      </ul>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">MR — Mean Reversion (평균회귀)</div>
+      <div class="strat-sub">횡보 레짐 전용. BB 하단 + 과매도 포착.</div>
+      <ul>
+        <li>매수: BB %B ≤ 0.1 + RSI ≤ 30 + VWAP 아래 + MACD 반등</li>
+        <li>익절: BB 중단 또는 +3% 중 가까운 쪽 (떨어지는 칼 빠른 익절)</li>
+        <li>손절: <code>-3%</code></li>
+      </ul>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">VS — Volume Spike (거래량 급등 추종)</div>
+      <div class="strat-sub">레짐 무관. 섹터 로테이션 포착.</div>
+      <ul>
+        <li>매수: 일봉 거래량 ≥ 20일 평균 × <code>5.0x</code> + 일중 +3~15% + RSI 50-78</li>
+        <li>학술근거: Jegadeesh-Titman momentum, Liu-Tsyvinski 크립토 단기 autocorrelation</li>
+        <li>손절: <code>-3.5%</code> 또는 일중 저가 중 유리한 쪽</li>
+      </ul>
+    </div>
+
+    <h2>4. 포지션 관리 (보유 중 자동 감시)</h2>
+    <p>매 사이클(60초)마다 보유 포지션 각각에 대해 6단계 순서로 체크. 앞 단계에서 걸리면 뒷 단계 생략.</p>
+
+    <h3>① 손절 (최우선)</h3>
+    <p>PnL ≤ 전략별 손절선 → 즉시 <code>SELL_STOP_LOSS</code></p>
+    <table>
+      <tr><th>전략</th><th>손절선</th></tr>
+      <tr><td>VB</td><td>-5.0%</td></tr>
+      <tr><td>MB</td><td>-4.0%</td></tr>
+      <tr><td>MR</td><td>-3.0%</td></tr>
+      <tr><td>VS</td><td>-3.5%</td></tr>
+    </table>
+
+    <h3>② 본전 방어 (Breakeven)</h3>
+    <p>한 번이라도 <code>+2%</code> 이상 갔으면 <code>breakeven_armed</code>. 이후 PnL이 <code>+0.2%</code> 아래로 떨어지면 <code>SELL_BREAKEVEN</code>으로 이탈. 이익 물리는 것을 방지.</p>
+    <div class="callout warn"><b>중요</b>: MFE(최고수익)는 HOLD 상태 포함 모든 사이클에서 갱신됩니다. 최근 버그 수정(HOLD에서 추적 누락) 적용 완료.</div>
+
+    <h3>③ 분할 익절 (Partial TP)</h3>
+    <p>목표가 도달 시 일부 수량만 매도. 잔량은 계속 보유하며 더 큰 익절 노림. <code>tp_levels</code> 설정에 따라 동작.</p>
+
+    <h3>④ 최종 익절</h3>
+    <p>PnL ≥ 전략별 익절 목표 → 잔량 전량 <code>SELL_TAKE_PROFIT</code></p>
+
+    <h3>⑤ 트레일링 스톱</h3>
+    <p>PnL ≥ <code>+3%</code> 도달 후, 최근 15분봉 고점 대비 <code>-1%</code> 하락 시 <code>SELL_TRAILING</code>. 익절 보존.</p>
+
+    <h3>⑥ 스테일 청산 (기회비용)</h3>
+    <p>진입 후 <code>24시간</code> 경과, PnL ±1% 이내 횡보, MFE &lt; 0.5%면 "신호 재평가" 후 여전히 정체면 <code>SELL_STALE</code>. 자본 회전율 향상.</p>
+
+    <h2>5. 리스크 게이트</h2>
+    <p>매 사이클 매수 전 점검. 하나라도 차단(block)이면 신규 매수 스킵.</p>
+    <ul>
+      <li><b>BTC 레짐</b> — bear일 때 차단</li>
+      <li><b>일일 손실 한도</b> — 오늘 누적 -X% 초과 시 차단</li>
+      <li><b>주간 MDD</b> — 최근 7일 최대낙폭 초과 시 차단</li>
+      <li><b>연속 손절</b> — 짧은 시간 내 N회 연속 손절 시 쿨다운</li>
+      <li><b>유동성 경고</b> — 얕은 새벽 시간대 등 → 포지션 사이즈 축소(warn, 차단은 아님)</li>
+    </ul>
+
+    <h2>6. 매수 실행</h2>
+    <ul>
+      <li><b>포지션 한도</b>: 최대 <code>5개</code> 동시 보유</li>
+      <li><b>보유/쿨다운 제외</b>: 이미 보유 중이거나 <code>12시간</code> 내 청산한 코인은 제외</li>
+      <li><b>사이즈</b>: 총자산 × 리스크비율 ÷ (진입가 - 손절가) 공식. 얇은 유동성 경고 시 축소</li>
+      <li><b>같은 사이클 중복 방지</b>: 한 코인에 여러 전략이 동시에 BUY 신호 내도 1회만 진입</li>
+      <li><b>주문 방식</b>: 지정가 우선 (슬리피지 방지). 실거래 모드에서만 실주문, <b>현재는 페이퍼(가상잔고)</b></li>
+    </ul>
+
+    <h2>7. 쿨다운 & 중복 방지</h2>
+    <ul>
+      <li><b>재진입 쿨다운</b>: 청산 후 <code>12시간</code> 동안 같은 코인 재진입 금지. 손절 직후 반복매수 방지.</li>
+      <li><b>보호 코인</b>: <code>data/protected-coins.json</code>에 등록된 코인은 매수 대상에서 완전 제외 (사용자 외부 보유분과 충돌 방지).</li>
+    </ul>
+
+    <h2>8. DB 저장 정책</h2>
+    <p>모든 사이클을 저장하면 노이즈가 많아져 선별 저장합니다.</p>
+    <ul>
+      <li><b>의미있는 사이클</b> 저장: 포지션 보유 / 신호 생성 / 매수 / 매도 / 에러 중 하나라도 있을 때</li>
+      <li><b>Heartbeat</b>: 위 조건 모두 없어도 <code>30사이클(30분)마다</code> 1회 저장 (데몬 생존 확인용)</li>
+      <li><b>자동 정리</b>: 신호 14일, 사이클 30일, 에러 90일, 스크리닝 결과 14일 지나면 삭제 (하루 1회)</li>
+    </ul>
+
+    <h2>9. 모드 구분</h2>
+    <table>
+      <tr><th>모드</th><th>실주문</th><th>잔고</th><th>용도</th></tr>
+      <tr><td><b>live</b></td><td>O</td><td>실계좌</td><td>실거래</td></tr>
+      <tr><td><b>dry</b></td><td>X</td><td>실계좌 조회</td><td>로직 검증 (주문만 스킵)</td></tr>
+      <tr><td><b>paper</b></td><td>X</td><td>가상잔고 100만원</td><td>end-to-end 시뮬레이션 (현재 가동 중)</td></tr>
+    </table>
+
+    <div class="callout danger"><b>안전 원칙</b>: 실거래 전환 전 반드시 paper 모드에서 최소 1주일 검증. 실거래 모드에서도 하드 리스크 게이트(BTC 레짐, 일일 손실한도)는 항상 활성.</div>
+
+    <h2>10. 용어 사전</h2>
+
+    <h3>거래 동작 용어</h3>
+    <div class="strat-card">
+      <div class="strat-name">트레일링 스톱 (Trailing Stop)</div>
+      <div class="strat-sub">"이익을 따라다니며 고점 대비 일정 % 하락 시 청산"</div>
+      <p>고정 손절선과 달리 <b>움직이는 손절선</b>. 수익이 커질수록 손절선도 함께 올라감. 예: +3% 도달 후 고점 1050원 기록 → 1040원(-1%) 찍으면 매도. 상승 추세 끝까지 타고 꺾이는 순간 이익 확정.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">스테일 (Stale) 청산</div>
+      <div class="strat-sub">"오래 물려서 기회비용 발생한 포지션 청산"</div>
+      <p>진입 후 일정 시간(24h) 지났는데 수익도 손실도 거의 없는 횡보 상태 = 자본이 놀고 있음. 이 자본을 다른 기회에 쓰기 위해 청산. "죽지도 살지도 않는 포지션"을 정리하는 로직.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">본전 방어 (Breakeven Stop)</div>
+      <div class="strat-sub">"한 번 수익 난 포지션은 최소 본전 지키기"</div>
+      <p>진입 후 +2% 이상 갔으면 <code>armed=1</code> 상태가 되어, 이후 본전 이하로 떨어지면 즉시 청산. "이익이 손실로 바뀌는" 최악의 경험을 막음.</p>
+    </div>
+
+    <h3>시장 상태 용어</h3>
+    <div class="strat-card">
+      <div class="strat-name">레짐 (Regime)</div>
+      <div class="strat-sub">"시장이 지금 상승장인가, 하락장인가, 횡보장인가"</div>
+      <p>종가 이동평균(EMA) 기울기와 가격 위치로 판정: <code>bull</code>(상승)·<code>bear</code>(하락)·<code>range</code>(횡보). 전략마다 유리한 레짐이 다름 — 돌파 전략(VB/MB)은 bull, 평균회귀(MR)는 range에서만 작동.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">스파이크 (Spike)</div>
+      <div class="strat-sub">"오늘 거래대금이 평소의 몇 배인가"</div>
+      <p>공식: <code>today_value / 20일_평균_value</code>. 2x 이상이면 "뭔가 일어나고 있다", 10x 이상이면 "대폭발". 단타의 가장 빠른 신호.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">채널 A / 채널 B</div>
+      <div class="strat-sub">"후보 선정 경로"</div>
+      <p><b>채널 A</b>(폐지): 24h 거래대금 상위 종목 — BTC/ETH 등 대장주. 변동성 작아 단타 부적합.<br>
+      <b>채널 B</b>(활성): 거래대금 spike 상위 종목 — 오늘 갑자기 활발해진 소/중형주. 현재 이 채널만 사용.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">스프레드 (Spread)</div>
+      <div class="strat-sub">"매수호가와 매도호가의 차이(%)"</div>
+      <p>매수 즉시 발생하는 손실. 스프레드 0.5% = 매수하자마자 -0.5% 출발. 단타 평균 목표 수익 1-3%인데 스프레드 크면 이익의 상당 부분이 날아감. 그래서 <code>0.35%</code> 이상은 거부, <code>0.2%</code> 이상은 등급 강등.</p>
+    </div>
+
+    <h3>기술 지표 (Technical Indicators)</h3>
+    <div class="strat-card">
+      <div class="strat-name">EMA (Exponential Moving Average, 지수이동평균)</div>
+      <p>최근 가격에 더 큰 가중치를 둔 이동평균. 단순 평균(SMA)보다 반응 빠름. <b>EMA9 &gt; EMA21</b>이면 단기 추세가 상승세. 골든크로스/데드크로스 개념의 기초.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">RSI (Relative Strength Index, 상대강도지수)</div>
+      <p>0-100 범위. 최근 N일 상승/하락 비율로 계산. <b>70 이상 = 과매수(조정 위험)</b>, <b>30 이하 = 과매도(반등 가능)</b>. 돌파 매수 시 68 이상이면 추격매수 차단. J. Welles Wilder (1978).</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">MACD (Moving Average Convergence Divergence)</div>
+      <p>EMA12 - EMA26 = MACD 라인. MACD의 EMA9 = 시그널 라인. 둘의 차이 = 히스토그램. <b>히스토그램이 음→양으로 바뀌거나 확장 중</b>이면 상승 모멘텀. 추세 전환 포착. Gerald Appel (1970s).</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">ATR (Average True Range, 평균 실질 변동폭)</div>
+      <p>N일간 일평균 고저 변동폭. 코인이 얼마나 출렁이는가 측정. 손절/익절 폭을 코인 특성에 맞춰 동적으로 정할 때 사용 — 예: 변동성 큰 코인은 손절 넓게, 작은 코인은 타이트하게. "-5%" 같은 고정값보다 과학적.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">BB (Bollinger Bands, 볼린저 밴드)</div>
+      <p>이동평균 ± 표준편차×2 의 상/하단 밴드. 가격이 <b>밴드 하단 터치 = 과매도</b>, 상단 터치 = 과매수로 해석. <code>%B</code> = 가격이 밴드의 어느 위치(0=하단, 1=상단). 평균회귀(MR) 전략의 핵심. John Bollinger (1980s).</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">VWAP (Volume Weighted Average Price, 거래량 가중평균가)</div>
+      <p>Σ(가격×거래량) / Σ(거래량). 기관 트레이더의 "본전가" 개념. 현재가가 VWAP 아래 = 오늘 대부분의 거래자보다 싸게 매수하는 셈. MR 전략에서 추가 확인용.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">ADX (Average Directional Index, 평균 방향성 지수)</div>
+      <p>추세의 "강도"를 측정 (방향 무관). <b>25 이상 = 뚜렷한 추세</b>, 20 이하 = 약추세/횡보. 돌파 전략은 ADX가 약하면 신뢰도 낮음 → 등급 강등. J. Welles Wilder (1978).</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Hurst 지수 (Hurst Exponent)</div>
+      <p>0~1 범위. <b>&gt; 0.5 = 추세성</b>(한번 움직이면 계속), <b>&lt; 0.5 = 평균회귀성</b>(튀어도 돌아옴), 0.5 = 랜덤워크. 돌파 매수인데 코인이 평균회귀 성향이면 함정 → 강등. Harold Hurst (1951, 나일강 수위 연구에서 유래).</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Donchian Channel (돈치안 채널)</div>
+      <p>최근 N일 최고가/최저가 밴드. <b>N일 최고가 돌파 = 명확한 추세 시작 신호</b>. Turtle Traders(리차드 데니스)가 유명하게 만든 지표. VB에서 Donchian 20일 고가 동시 돌파 시 보너스 점수.</p>
+    </div>
+
+    <h3>학술 근거 (간단 요약)</h3>
+    <div class="strat-card">
+      <div class="strat-name">Larry Williams — Volatility Breakout (1980s)</div>
+      <p>"오늘 시가에서 전일 변동폭의 K배 이상 돌파하면 그날 추세가 살아있다." K=0.5가 통계적으로 가장 안정. VB 전략의 근본. 1987년 세계 트레이딩 챔피언십에서 +11,376% 수익으로 유명.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Jegadeesh & Titman (1993)</div>
+      <p>"Returns to Buying Winners..." — 최근 3-12개월 상승 종목을 매수하는 momentum 전략이 통계적으로 <b>초과수익</b> 발생을 주식시장에서 최초로 실증. VS/MB 전략의 이론적 배경. <i>Journal of Finance</i>.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Liu, Tsyvinski & Wu (2022)</div>
+      <p>"Common Risk Factors in Cryptocurrency" — 크립토 시장에서 <b>1-7일 단기</b>에 강한 양의 autocorrelation(추세 지속성) 존재. 주식시장의 월단위 momentum이 크립토에선 일 단위로 압축된다는 의미. 단타 momentum 전략의 학술적 정당화. <i>Review of Financial Studies</i>.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Mandelbrot & Peters — Hurst Exponent</div>
+      <p>금융시계열이 랜덤워크가 아니라 장기 기억(long memory)을 가진다는 프랙탈 이론. Edgar Peters의 "Chaos and Order in the Capital Markets"(1991)가 실무 적용을 대중화. VB의 Hurst 강등 게이트 근거.</p>
+    </div>
+
+    <div class="strat-card">
+      <div class="strat-name">Kelly Criterion / 포지션 사이징</div>
+      <p>"한 번에 얼마 베팅해야 장기 기대값 최대인가." 승률과 페이오프로 결정. 실무에선 Full Kelly는 과적합 위험 → 1/2 Kelly 또는 fixed fractional(1-2% 리스크) 방식. 현재 시스템은 <b>리스크 고정 비율 × 손절 폭</b> 방식.</p>
+    </div>
+
+    <div class="callout"><b>왜 학술 근거가 중요한가?</b> 백테스트 과적합(과거 데이터에 맞춘 우연한 결과)을 피하기 위해. 수십 년 누적된 논문에서 <b>반복 검증된 효과</b>만 사용하면 생존 편향(survivorship bias) 위험 감소.</div>
+
+    <p style="text-align:right; color:var(--text2); font-size:11px; margin-top:30px;">last updated: 2026-04-19</p>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+function showTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById(id).classList.add('active');
+}
+
+let currentMode = 'all';
+const modeQ = () => (currentMode && currentMode !== 'all') ? ('?mode=' + currentMode) : '';
+const modeAppend = (url) => url + (url.includes('?') ? '&' : '?') + 'mode=' + currentMode;
+
+async function loadStats() {
+  const r = await fetch(API + '/api/stats' + modeQ());
+  const s = await r.json();
+  const fmt = (v, unit='') => (v >= 0 ? '+' : '') + v.toFixed ? v.toFixed(2) + unit : v + unit;
+  const cls = v => v >= 0 ? 'positive' : 'negative';
+  document.getElementById('statsBox').innerHTML = `
+    <div class="stat"><div class="stat-label">누적 실현 PnL</div>
+      <div class="stat-value ${cls(s.cumulative_pnl_krw)}">${Math.round(s.cumulative_pnl_krw||0).toLocaleString()}원</div></div>
+    <div class="stat"><div class="stat-label">승률</div>
+      <div class="stat-value">${s.win_rate}%</div></div>
+    <div class="stat"><div class="stat-label">오늘 PnL</div>
+      <div class="stat-value ${cls(s.today_pnl_pct)}">${(s.today_pnl_pct||0).toFixed(2)}%</div></div>
+    <div class="stat"><div class="stat-label">보유 포지션</div>
+      <div class="stat-value">${s.total_open}</div></div>
+    <div class="stat"><div class="stat-label">총 거래 수</div>
+      <div class="stat-value">${s.total_closed}</div></div>
+    <div class="stat"><div class="stat-label">연속 손절</div>
+      <div class="stat-value ${s.consecutive_losses>=3?'negative':''}">${s.consecutive_losses}회</div></div>`;
+}
+
+async function loadPositions() {
+  const r = await fetch(API + '/api/positions' + modeQ());
+  const rows = await r.json();
+  let html = '<table><tr><th>심볼</th><th>전략</th><th>등급</th><th>수량</th><th>평균가</th><th>현재가</th><th>투입원화</th><th>평가손익</th><th>수익률</th><th>MFE</th><th>MAE</th><th>진입일</th></tr>';
+  rows.forEach(p => {
+    const pnlPct = p.pnl_pct;
+    const pnlKrw = p.pnl_krw;
+    const pnlPctStr = pnlPct != null ? (pnlPct>=0?'+':'') + pnlPct.toFixed(2) + '%' : '-';
+    const pnlKrwStr = pnlKrw != null ? (pnlKrw>=0?'+':'') + Math.round(pnlKrw).toLocaleString() + '원' : '-';
+    const pnlCls = pnlPct != null ? (pnlPct>=0?'positive':'negative') : '';
+    const curStr = p.current_price != null ? p.current_price.toLocaleString() : '-';
+    html += `<tr>
+      <td class="mono">${p.symbol}</td>
+      <td>${p.strategy}</td>
+      <td><span class="chip chip-${p.entry_grade}">${p.entry_grade||'-'}</span></td>
+      <td class="mono">${(p.entry_quantity||0).toFixed(4)}</td>
+      <td class="mono">${(p.entry_price||0).toLocaleString()}</td>
+      <td class="mono">${curStr}</td>
+      <td class="mono">${(p.entry_krw||0).toLocaleString()}</td>
+      <td class="mono ${pnlCls}">${pnlKrwStr}</td>
+      <td class="mono ${pnlCls}">${pnlPctStr}</td>
+      <td class="mono ${(p.max_favorable||0)>=0?'positive':'negative'}">${(p.max_favorable||0).toFixed(2)}%</td>
+      <td class="mono ${(p.max_adverse||0)>=0?'positive':'negative'}">${(p.max_adverse||0).toFixed(2)}%</td>
+      <td class="mono">${p.entry_date||''}</td>
+    </tr>`;
+  });
+  if (!rows.length) html += '<tr><td colspan="12" style="text-align:center;color:var(--text2)">보유 중인 포지션 없음</td></tr>';
+  html += '</table>';
+  document.getElementById('positionsBox').innerHTML = html;
+}
+
+async function loadTrades() {
+  const r = await fetch(API + '/api/recent-trades' + modeQ());
+  const rows = await r.json();
+  let html = '<table><tr><th>심볼</th><th>전략</th><th>모드</th><th>상태</th><th>진입</th><th>청산</th><th>PnL</th><th>사유</th></tr>';
+  rows.forEach(t => {
+    const pnl = t.pnl_pct;
+    const modeCls = t.mode === 'live' ? 'negative' : (t.mode === 'paper' ? 'positive' : '');
+    const modeLabel = t.mode === 'live' ? '실거래' : (t.mode === 'paper' ? '페이퍼' : (t.mode === 'dry' ? '드라이' : (t.mode||'-')));
+    html += `<tr>
+      <td class="mono">${t.symbol}</td><td>${t.strategy}</td>
+      <td class="${modeCls}" style="font-size:11px">${modeLabel}</td>
+      <td>${t.status}</td>
+      <td class="mono">${(t.entry_price||0).toLocaleString()}</td>
+      <td class="mono">${(t.exit_price||0).toLocaleString()||'-'}</td>
+      <td class="mono ${pnl>=0?'positive':'negative'}">${pnl!=null?(pnl>=0?'+':'')+pnl.toFixed(2)+'%':'-'}</td>
+      <td style="font-size:11px">${t.exit_reason||t.notes||''}</td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('tradesBox').innerHTML = html;
+}
+
+async function loadSignals() {
+  const r = await fetch(API + '/api/signals' + modeQ());
+  const rows = await r.json();
+  let html = '<table><tr><th>시각</th><th>심볼</th><th>전략</th><th>액션</th><th>등급</th><th>점수</th><th>사유</th></tr>';
+  rows.forEach(s => {
+    html += `<tr>
+      <td class="mono" style="font-size:11px">${s.created_at||''}</td>
+      <td class="mono">${s.symbol}</td><td>${s.strategy}</td><td>${s.action}</td>
+      <td><span class="chip chip-${s.grade}">${s.grade}</span></td>
+      <td class="mono">${s.score}/${s.score_max}</td>
+      <td style="font-size:11px">${s.reason||''}</td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('signalsBox').innerHTML = html;
+}
+
+async function loadCycles() {
+  const r = await fetch(API + '/api/cycles');
+  const rows = await r.json();
+  let html = '<table><tr><th>#</th><th>시각</th><th>상태</th><th>BTC레짐</th><th>포지션</th><th>신호</th><th>매수</th><th>매도</th><th>오늘PnL</th><th>소요</th></tr>';
+  rows.forEach(c => {
+    html += `<tr>
+      <td>${c.cycle_num}</td>
+      <td class="mono" style="font-size:11px">${c.created_at||''}</td>
+      <td>${c.status}</td><td>${c.btc_regime||'-'}</td>
+      <td>${c.positions_count}</td><td>${c.signals_generated||0}</td>
+      <td>${c.buys_filled||0}</td><td>${c.sells_executed||0}</td>
+      <td class="mono ${(c.today_pnl_pct||0)>=0?'positive':'negative'}">${(c.today_pnl_pct||0).toFixed(2)}%</td>
+      <td class="mono">${(c.duration_sec||0).toFixed(1)}s</td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('cyclesBox').innerHTML = html;
+  document.getElementById('recentCycles').innerHTML = html;
+}
+
+async function loadErrors() {
+  const r = await fetch(API + '/api/errors');
+  const rows = await r.json();
+  let html = '<table><tr><th>시각</th><th>소스</th><th>메시지</th></tr>';
+  rows.forEach(e => {
+    html += `<tr>
+      <td class="mono" style="font-size:11px">${e.created_at}</td>
+      <td>${e.source}</td><td style="font-size:11px">${e.message}</td>
+    </tr>`;
+  });
+  if (!rows.length) html += '<tr><td colspan="3" style="text-align:center;color:var(--text2)">에러 없음</td></tr>';
+  html += '</table>';
+  document.getElementById('errorsBox').innerHTML = html;
+}
+
+let currentRange = 7;
+
+async function loadPnlHistory(days) {
+  currentRange = days;
+  const r = await fetch(API + modeAppend('/api/pnl-history?days=' + days));
+  const rows = await r.json();
+  renderPnlChart(rows, days);
+}
+
+function renderPnlChart(rows, days) {
+  const svg = document.getElementById('pnlChart');
+  const W = 800, H = 260, P = { l: 56, r: 16, t: 16, b: 28 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+
+  if (!rows.length) {
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" class="axis-label" text-anchor="middle">데이터 없음</text>`;
+    document.getElementById('pnlSummary').innerHTML = '기간 내 청산 거래 없음';
+    return;
+  }
+
+  // 시간 범위 = 현재 시점에서 N일 전 ~ 현재 (거래 유무 무관)
+  const now = Date.now();
+  const start = now - days * 86400000;
+  const parseT = s => new Date(s.replace(' ', 'T')).getTime();
+
+  // 차트 시작점: (start, 0) — 누적 PnL 은 0에서 시작
+  const points = [{ t: start, cum: 0, symbol: null, pnl: 0 }];
+  rows.forEach(r => points.push({
+    t: parseT(r.t), cum: r.cumulative, symbol: r.symbol, pnl: r.pnl_krw,
+  }));
+  // 차트 끝점까지 마지막 누적값 연장
+  const lastCum = rows[rows.length - 1].cumulative;
+  points.push({ t: now, cum: lastCum, symbol: null, pnl: 0 });
+
+  const ys = points.map(p => p.cum);
+  const yMin = Math.min(0, ...ys);
+  const yMax = Math.max(0, ...ys);
+  const yRange = (yMax - yMin) || 1;
+  // 여백 10%
+  const yPad = yRange * 0.1;
+  const yLo = yMin - yPad, yHi = yMax + yPad;
+
+  const x = t => P.l + ((t - start) / (now - start)) * iw;
+  const y = v => P.t + ih - ((v - yLo) / (yHi - yLo)) * ih;
+
+  // path
+  const d = points.map((p, i) => (i === 0 ? 'M' : 'L') + x(p.t).toFixed(1) + ',' + y(p.cum).toFixed(1)).join(' ');
+  const zeroY = y(0);
+  const areaD = d + ` L${x(now).toFixed(1)},${zeroY.toFixed(1)} L${x(start).toFixed(1)},${zeroY.toFixed(1)} Z`;
+  const lineCls = lastCum >= 0 ? 'line-pos' : 'line-neg';
+  const areaCls = lastCum >= 0 ? 'area-pos' : 'area-neg';
+
+  // y축 눈금 (5단계)
+  const steps = 4;
+  let yTicks = '';
+  for (let i = 0; i <= steps; i++) {
+    const v = yLo + (yHi - yLo) * i / steps;
+    const py = y(v);
+    yTicks += `<line class="grid" x1="${P.l}" y1="${py}" x2="${W-P.r}" y2="${py}"/>`;
+    yTicks += `<text class="axis-label" x="${P.l-6}" y="${py+3}" text-anchor="end">${fmtKrwShort(v)}</text>`;
+  }
+
+  // x축 눈금 (5개)
+  let xTicks = '';
+  const tickCount = 5;
+  for (let i = 0; i <= tickCount; i++) {
+    const tt = start + (now - start) * i / tickCount;
+    const px = x(tt);
+    xTicks += `<text class="axis-label" x="${px}" y="${H-P.b+16}" text-anchor="middle">${fmtDate(tt, days)}</text>`;
+  }
+
+  svg.innerHTML = yTicks + xTicks
+    + `<line class="zero-line" x1="${P.l}" y1="${zeroY}" x2="${W-P.r}" y2="${zeroY}"/>`
+    + `<path class="${areaCls}" d="${areaD}"/>`
+    + `<path class="${lineCls}" d="${d}"/>`;
+
+  // 요약: 기간 손익 / 거래 수 / 최고 최저
+  const trades = rows.length;
+  const maxCum = Math.max(...rows.map(r => r.cumulative), 0);
+  const minCum = Math.min(...rows.map(r => r.cumulative), 0);
+  const cls = lastCum >= 0 ? 'positive' : 'negative';
+  document.getElementById('pnlSummary').innerHTML =
+    `기간 손익 <b class="${cls}">${fmtKrw(lastCum)}원</b> · 거래 ${trades}건 · `
+    + `최고 ${fmtKrw(maxCum)}원 / 최저 ${fmtKrw(minCum)}원`;
+}
+
+function fmtKrw(v) { return (v >= 0 ? '+' : '') + Math.round(v).toLocaleString(); }
+function fmtKrwShort(v) {
+  const a = Math.abs(v);
+  if (a >= 1e8) return (v/1e8).toFixed(1) + '억';
+  if (a >= 1e4) return (v/1e4).toFixed(0) + '만';
+  return Math.round(v).toLocaleString();
+}
+function fmtDate(ts, days) {
+  const d = new Date(ts);
+  if (days <= 1) {
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+  if (days <= 30) {
+    return (d.getMonth()+1) + '/' + d.getDate();
+  }
+  return (d.getFullYear() % 100) + '/' + (d.getMonth()+1);
+}
+
+document.querySelectorAll('#rangeBtns .range-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#rangeBtns .range-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadPnlHistory(parseInt(btn.dataset.days, 10));
+  });
+});
+
+document.querySelectorAll('#modeFilter .mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#modeFilter .mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentMode = btn.dataset.mode;
+    loadAll();
+  });
+});
+
+async function loadAll() {
+  await Promise.all([
+    loadStats(), loadPositions(), loadTrades(), loadSignals(), loadCycles(), loadErrors(),
+    loadPnlHistory(currentRange),
+  ]);
+  document.getElementById('lastUpdate').textContent = '업데이트: ' + new Date().toLocaleTimeString();
+}
+
+loadAll();
+setInterval(loadAll, 30000);  // 30초마다 새로고침
+</script>
+</body>
+</html>
