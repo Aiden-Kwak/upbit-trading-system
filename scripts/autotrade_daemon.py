@@ -28,6 +28,7 @@ from config import load_config, get_api_keys, LOGS_DIR
 from notify import (notify_buy, notify_daemon, notify_error,
                     notify_partial_tp, notify_sell)
 from order_executor import execute_buy, execute_sell, execute_partial_sell
+import position_monitor
 from screener import screen
 from signal_engine import check_position_signals, evaluate_symbol
 from upbit_client import UpbitClient
@@ -66,6 +67,7 @@ class Daemon:
         )
         self.dry_run = dry_run
         self.paper = paper
+        self.mode = "paper" if paper else ("dry" if dry_run else "live")
         self.interval_sec = interval_sec
         self.cycle_num = 0
         self.last_full_scan = 0.0
@@ -78,14 +80,29 @@ class Daemon:
         log.info(f"데몬 시작 [{mode}]. interval={interval_sec}s")
         if paper:
             log.info(f"가상 시작자본: {self.client.get_balance_krw():,.0f}원")
-        log.info(f"활성 전략: VB={self.cfg['strategy_vb_enabled']}, "
-                 f"MB={self.cfg['strategy_mb_enabled']}, MR={self.cfg['strategy_mr_enabled']}")
+        log.info(
+            f"활성 전략: VB={self.cfg['strategy_vb_enabled']}, "
+            f"MB={self.cfg['strategy_mb_enabled']}, "
+            f"MR={self.cfg['strategy_mr_enabled']}, "
+            f"VS={self.cfg.get('strategy_vs_enabled', False)}, "
+            f"VP={self.cfg.get('strategy_vp_enabled', False)}"
+        )
         if self.cfg.get("discord_notify", True):
             notify_daemon("시작", f"모드 **{mode}** · interval={interval_sec}s")
+
+        # 모니터 스레드 — LIVE 만 활성화 (dry/paper 는 즉시반응 가치 없음)
+        if not dry_run and not paper:
+            mon_iv = int(self.cfg.get("monitor_interval_sec", 10))
+            position_monitor.start(self.client, load_config, interval=mon_iv)
+            log.info(f"📡 PositionMonitor 스레드 시작 — interval={mon_iv}s (STOP_LOSS 전용)")
 
     def stop(self, *_):
         log.info("종료 신호 수신 — 현재 사이클 후 종료")
         self.running = False
+        try:
+            position_monitor.stop(timeout=5.0)
+        except Exception as e:
+            log.warning(f"모니터 스레드 종료 실패: {e}")
 
     def run(self) -> None:
         sigmod.signal(sigmod.SIGTERM, self.stop)
@@ -114,6 +131,18 @@ class Daemon:
         self.cycle_num += 1
         start = time.time()
         log.info(f"━━━ 사이클 #{self.cycle_num} ━━━")
+
+        # config 핫리로드 — user-config.json 변경을 매 사이클 반영
+        try:
+            new_cfg = load_config()
+            if new_cfg != self.cfg:
+                changed = [k for k in set(new_cfg) | set(self.cfg)
+                           if new_cfg.get(k) != self.cfg.get(k) and not k.startswith("_")]
+                if changed:
+                    log.info(f"[config] 변경 감지: {changed}")
+                self.cfg = new_cfg
+        except Exception as e:
+            log.warning(f"[config] 리로드 실패 — 기존 설정 유지: {e}")
 
         status = "ok"
         error_msg = ""
@@ -152,6 +181,10 @@ class Daemon:
                 if sig["action"] == "PARTIAL_TP":
                     pos = next((p for p in positions if p["symbol"] == sym), None)
                     if not pos:
+                        continue
+                    # 모니터 스레드가 동일 심볼 청산 중이면 부분익절 보류 (이중 매도 방지)
+                    if position_monitor.is_pending(sym):
+                        log.info(f"  [SKIP_PARTIAL] {sym} — 모니터 스레드 청산 중")
                         continue
                     log.info(f"  PARTIAL_TP {sym}: {sig['reason']}")
                     res = execute_partial_sell(
@@ -193,7 +226,13 @@ class Daemon:
                 if not pos:
                     continue
                 log.info(f"  SELL {sym}: {sig['action']} / {sig['reason']} / PnL={sig.get('pnl_pct', 0):+.2f}%")
-                res = execute_sell(self.client, pos, sig["action"], dry_run=self.dry_run)
+                # 동시성 보호 wrapper — 모니터 스레드와 경쟁 시 한 쪽만 성공
+                res = position_monitor.safe_execute_sell(
+                    self.client, pos, sig["action"], dry_run=self.dry_run
+                )
+                if res is None:
+                    log.info(f"    ↺ skip — 모니터 스레드가 이미 처리 중/완료")
+                    continue
                 if res.ok:
                     sells_executed += 1
                     log.info(f"    ✅ {res.quantity} @ {res.price:,.0f} = {res.krw:,.0f}원")
@@ -210,8 +249,7 @@ class Daemon:
                     log.warning(f"    ❌ 실패: {res.reason}")
 
         # 3. 리스크 게이트 (모드별 기록만 기준)
-        _mode = "paper" if self.paper else ("dry" if self.dry_run else "live")
-        allow_buy, decisions = risk.run_all_gates(self.client, self.cfg, mode=_mode)
+        allow_buy, decisions = risk.run_all_gates(self.client, self.cfg, mode=self.mode)
         for d in decisions:
             if d.severity == "block":
                 log.warning(f"  🚫 {d.reason}")
@@ -241,10 +279,10 @@ class Daemon:
         # 5. 매수 대상 선정 — 보유중/최근 청산 쿨다운 제외
         held_symbols = {p["symbol"] for p in positions}
         cooldown_hours = float(self.cfg.get("reentry_cooldown_hours", 0) or 0)
-        cooldown_symbols = (db.recently_closed_symbols(cooldown_hours)
+        cooldown_symbols = (db.recently_closed_symbols(cooldown_hours, mode=self.mode)
                             if cooldown_hours > 0 else set())
         if cooldown_symbols:
-            log.info(f"재진입 쿨다운({cooldown_hours}h): {sorted(cooldown_symbols)}")
+            log.info(f"재진입 쿨다운({cooldown_hours}h, {self.mode}): {sorted(cooldown_symbols)}")
         candidates = [c for c in self.cached_candidates
                       if c["symbol"] not in held_symbols
                       and c["symbol"] not in cooldown_symbols
@@ -315,11 +353,10 @@ class Daemon:
                 purchased_this_cycle.add(s.symbol)
                 log.info(f"    ✅ uuid={res.uuid}")
                 krw_balance -= krw_amt
-                _mode = "paper" if self.paper else ("dry" if self.dry_run else "live")
                 db.insert_signal(
                     symbol=s.symbol, strategy=s.strategy, action="BUY",
                     grade=s.grade, score=s.score, score_max=s.score_max,
-                    reason=s.reason, details=s.details, mode=_mode,
+                    reason=s.reason, details=s.details, mode=self.mode,
                 )
                 if self.cfg.get("discord_notify", True):
                     notify_buy(
@@ -336,8 +373,7 @@ class Daemon:
                     signals_gen: int, buys_att: int, buys_fil: int,
                     sells_exe: int, btc_regime: str, error: str) -> None:
         elapsed = time.time() - start
-        _mode = "paper" if self.paper else ("dry" if self.dry_run else "live")
-        pnl = db.today_pnl_pct(mode=_mode)
+        pnl = db.today_pnl_pct(mode=self.mode)
         # 선별 저장 — 무변화 사이클은 건너뜀 (30사이클마다 heartbeat 만 기록)
         db.insert_cycle(
             cycle_num=self.cycle_num, status=status, positions_count=n_pos,
@@ -346,6 +382,7 @@ class Daemon:
             today_pnl_pct=pnl, btc_regime=btc_regime,
             duration_sec=elapsed, error_msg=error,
             heartbeat_every=self.cfg.get("cycle_heartbeat_every", 30),
+            mode=self.mode,
         )
 
     def _maybe_maintenance(self) -> None:

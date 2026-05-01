@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -72,14 +73,46 @@ def execute_buy(
 
     uuid = resp.get("uuid", "")
 
+    # ─── 라이브 체결 reconcile ───────────────────────────────
+    # 업비트에서 실체결 데이터(평균가/수량/금액) 조회해 추정치 대체.
+    # 주문가 * (1 ± 프리미엄) 로 placement 하지만 실 체결가는 오더북 호가에 의존.
+    final_price = price
+    final_qty = actual_qty
+    final_krw = krw_amount
+    reconciled = False
+    if not dry_run and uuid:
+        for wait_s in (0.7, 1.3, 2.0):
+            time.sleep(wait_s)
+            info = client.get_order(uuid)
+            if not isinstance(info, dict):
+                continue
+            trades_list = info.get("trades") or []
+            vol_sum = sum(float(t.get("volume") or 0) for t in trades_list)
+            funds_sum = sum(float(t.get("funds") or 0) for t in trades_list)
+            if vol_sum > 0 and funds_sum > 0:
+                final_price = funds_sum / vol_sum
+                final_qty = vol_sum
+                final_krw = funds_sum
+                reconciled = True
+                log.info(
+                    f"{sym} 실체결 reconcile: {final_qty:.6f} @ {final_price:,.4f} "
+                    f"= {final_krw:,.0f}원 (state={info.get('state')})"
+                )
+                break
+        if not reconciled:
+            log.warning(
+                f"{sym} 체결 확인 실패(대기/부분체결) — 추정가 {price:,.4f} 로 기록, "
+                f"다음 사이클에 잔고 기반 재조정 필요"
+            )
+
     # DB 기록 (mode: live/dry/paper)
     mode = "paper" if getattr(client, "paper", False) else ("dry" if dry_run else "live")
     trade_id = db.insert_trade(
         symbol=sym,
         strategy=signal.strategy,
-        entry_price=price,
-        entry_quantity=actual_qty,
-        entry_krw=krw_amount,
+        entry_price=final_price,
+        entry_quantity=final_qty,
+        entry_krw=final_krw,
         entry_grade=signal.grade,
         entry_uuid=uuid,
         notes=signal.reason[:500],
@@ -90,11 +123,11 @@ def execute_buy(
         ok=True,
         symbol=sym,
         side="buy",
-        price=price,
-        quantity=actual_qty,
-        krw=krw_amount,
+        price=final_price,
+        quantity=final_qty,
+        krw=final_krw,
         uuid=uuid,
-        reason=f"trade_id={trade_id}",
+        reason=f"trade_id={trade_id}" + (" reconciled" if reconciled else ""),
     )
 
 
@@ -193,7 +226,12 @@ def execute_sell(
         return OrderResult(False, sym, "sell", reason="현재가 조회 실패")
     cur = float(cur)
 
-    if sym in MAJORS and not dry_run:
+    # STOP_LOSS 는 모든 코인 시장가 매도 (지정가가 폭락 추격 못해 -8.85% 슬리피지 발생 사례)
+    # — API3 케이스 (2026-04-25): MFE -1%, MAE -8.18%, 실현 -8.85% (mb override -4% 무시됨)
+    is_stop_loss = "STOP_LOSS" in (reason or "")
+    use_market = (sym in MAJORS or is_stop_loss) and not dry_run
+
+    if use_market:
         resp = client.sell_market(sym, sell_qty)
         price = cur
     else:
@@ -208,7 +246,26 @@ def execute_sell(
         return OrderResult(False, sym, "sell", reason=str(err))
 
     uuid = resp.get("uuid", "")
-    exit_krw = sell_qty * price
+    # 시장가는 즉시 다중 호가 체결 가능 → reconcile 시도
+    final_price = price
+    final_qty = sell_qty
+    if use_market and uuid:
+        time.sleep(0.8)
+        sinfo = client.get_order(uuid)
+        if isinstance(sinfo, dict):
+            strades = sinfo.get("trades") or []
+            svol = sum(float(t.get("volume") or 0) for t in strades)
+            sfunds = sum(float(t.get("funds") or 0) for t in strades)
+            if svol > 0 and sfunds > 0:
+                final_price = sfunds / svol
+                final_qty = svol
+                log.info(
+                    f"{sym} 시장가 매도 reconcile: {final_qty:.6f} @ {final_price:,.4f} "
+                    f"(reason={reason})"
+                )
+    exit_krw = final_qty * final_price
+    price = final_price
+    sell_qty = final_qty
 
     # DB 업데이트
     db.close_trade(

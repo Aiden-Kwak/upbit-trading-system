@@ -143,6 +143,8 @@ def init_db() -> None:
             c.execute("UPDATE trades SET mode='dry' WHERE entry_uuid LIKE 'mock-%'")
         # signals 테이블에도 mode 기록 (모드별 필터 대시보드용)
         _ensure_column(c, "signals", "mode", "TEXT DEFAULT 'live'")
+        # daemon_cycles 에도 mode 기록 — paper/dry/live 기록 격리
+        _ensure_column(c, "daemon_cycles", "mode", "TEXT DEFAULT 'live'")
 
     # TZ 마이그레이션 — 기존 created_at (UTC) 을 KST 로 일회성 보정
     _migrate_tz_to_kst()
@@ -269,6 +271,15 @@ def arm_breakeven(trade_id: int) -> None:
         c.execute("UPDATE trades SET breakeven_armed=1 WHERE id=?", (trade_id,))
 
 
+def update_trade_entry(trade_id: int, entry_price: float, entry_quantity: float, entry_krw: float) -> None:
+    """실체결 데이터로 진입가/수량/금액 보정. reconcile 용."""
+    with get_conn() as c:
+        c.execute(
+            "UPDATE trades SET entry_price=?, entry_quantity=?, entry_krw=? WHERE id=?",
+            (entry_price, entry_quantity, entry_krw, trade_id),
+        )
+
+
 def close_trade(
     trade_id: int,
     exit_price: float,
@@ -344,6 +355,7 @@ def insert_cycle(
     today_pnl_pct: float, btc_regime: str, duration_sec: float,
     error_msg: str = "",
     heartbeat_every: int = 30,
+    mode: str = "live",
 ) -> bool:
     """사이클 기록.
 
@@ -370,11 +382,11 @@ def insert_cycle(
         c.execute(
             """INSERT INTO daemon_cycles
                (cycle_num,status,positions_count,signals_generated,buys_attempted,
-                buys_filled,sells_executed,today_pnl_pct,btc_regime,duration_sec,error_msg,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                buys_filled,sells_executed,today_pnl_pct,btc_regime,duration_sec,error_msg,mode,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cycle_num, status, positions_count, signals_generated,
              buys_attempted, buys_filled, sells_executed, today_pnl_pct,
-             btc_regime, duration_sec, error_msg, _now_kst()),
+             btc_regime, duration_sec, error_msg, mode, _now_kst()),
         )
     return True
 
@@ -433,24 +445,26 @@ def today_pnl_pct(mode: str | None = None) -> float:
     return float(row["p"] / row["e"] * 100)
 
 
-def recently_closed_symbols(hours: float) -> set[str]:
+def recently_closed_symbols(hours: float, mode: str | None = None) -> set[str]:
     """hours 시간 이내 청산된 심볼 집합. exit_time 기준 (없으면 exit_date 00:00 추정).
 
-    재진입 쿨다운 필터에 사용.
+    재진입 쿨다운 필터에 사용. mode 지정 시 해당 모드 청산만 카운트 (paper↔live 격리).
     """
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     cutoff_date = cutoff.split()[0]
+    sql = """SELECT DISTINCT symbol FROM trades
+             WHERE status='closed'
+               AND (
+                 (exit_time IS NOT NULL AND exit_time >= ?)
+                 OR (exit_time IS NULL AND exit_date >= ?)
+               )"""
+    params: tuple = (cutoff, cutoff_date)
+    if mode in ("live", "dry", "paper"):
+        sql += " AND mode=?"
+        params = params + (mode,)
     with get_conn() as c:
-        rows = c.execute(
-            """SELECT DISTINCT symbol FROM trades
-               WHERE status='closed'
-                 AND (
-                   (exit_time IS NOT NULL AND exit_time >= ?)
-                   OR (exit_time IS NULL AND exit_date >= ?)
-                 )""",
-            (cutoff, cutoff_date),
-        ).fetchall()
+        rows = c.execute(sql, params).fetchall()
     return {r[0] for r in rows}
 
 

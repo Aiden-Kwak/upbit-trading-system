@@ -6,6 +6,7 @@ data/trading.db
 data/trading.db-journal
 data/trading.db-wal
 data/trading.db-shm
+data/trading_archive_*.db
 data/user-config.json
 data/protected-coins.json
 data/.tz_migrated_kst

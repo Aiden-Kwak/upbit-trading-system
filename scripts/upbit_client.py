@@ -273,40 +273,38 @@ class UpbitClient:
 
     @staticmethod
     def round_to_tick(price: float) -> float:
-        """업비트 가격 단위(tick size) 정렬.
+        """업비트 KRW 마켓 호가 단위(tick size) 정렬.
 
-        가격 구간별 tick:
-        - 2,000,000 이상: 1,000원
-        - 1,000,000 이상: 500원
-        - 500,000 이상: 100원
-        - 100,000 이상: 50원
-        - 10,000 이상: 10원
-        - 1,000 이상: 1원
-        - 100 이상: 0.1원
-        - 10 이상: 0.01원
-        - 1 이상: 0.001원
-        - 0.1 이상: 0.0001원
-        - else: 0.00001원
+        실제 Upbit 오더북 기반 empirical 검증 (2026-04-21):
+          BCH@658k→500, AAVE@134k→100, COMP@37990→10, EGLD@6180→5,
+          ATOM@2663→1, UNI@4788→1, CPOOL@41.1→0.1, XEC@0.0106→0.0001.
+        5,000원 기준으로 tick 1→5 전환 (기존 코드에서 누락되어 EGLD 등
+        5,000~10,000원 코인 매수가 전부 invalid_price_bid 로 거절됨).
+        100,000~500,000원 구간도 tick=50→100 으로 보정.
         """
         if price >= 2_000_000:
             tick = 1000
         elif price >= 1_000_000:
             tick = 500
         elif price >= 500_000:
-            tick = 100
+            tick = 500
         elif price >= 100_000:
-            tick = 50
+            tick = 100
         elif price >= 10_000:
             tick = 10
+        elif price >= 5_000:
+            tick = 5
         elif price >= 1_000:
             tick = 1
         elif price >= 100:
-            tick = 0.1
+            tick = 1
         elif price >= 10:
-            tick = 0.01
+            tick = 0.1
         elif price >= 1:
-            tick = 0.001
+            tick = 0.01
         elif price >= 0.1:
+            tick = 0.001
+        elif price >= 0.01:
             tick = 0.0001
         else:
             tick = 0.00001

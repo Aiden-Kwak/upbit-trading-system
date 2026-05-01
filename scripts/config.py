@@ -56,6 +56,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
                "trailing_trigger_pct": 3.0,
                "trailing_distance_pct": 1.5,
                "tp_atr_multiple": 3.0},
+        # VP 는 EMA 종가 청산이 1차 → 안전망 SL 만 매우 느슨하게.
+        # take_profit_pct 는 사실상 비활성(매우 큰 값). 기존 BE/Trail/STALE 룰은
+        # check_position_signals 에서 strategy=='VP' 분기로 우회되어 영향 없음.
+        "VP": {"stop_loss_pct": -10.0, "take_profit_pct": 999.0},
     },
 
     # ─── 일일/주간 서킷 ───
@@ -75,6 +79,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "strategy_mb_enabled": True,          # 모멘텀 돌파 (15/60분봉)
     "strategy_mr_enabled": True,          # 평균회귀 (횡보 시만)
     "strategy_vs_enabled": True,          # Volume Spike (레짐 무관 급등 추종)
+    "strategy_vp_enabled": False,         # VWAP Pullback (눌림목, 롱 전용, 격리 청산)
+
+    # ─── VP 파라미터 (VWAP Pullback) ───
+    # 진입 = VWAP 위(세력 방향) + EMA9 눌림목(지지) + 위쪽 매물대 비어있음
+    # 회피 = VWAP 위/아래 잦은 교차(횡보) 시 SKIP
+    # 청산 = 캔들 몸통이 EMA 아래에서 마감 (signal_engine.check_position_signals VP 분기)
+    "vp_timeframe": "minute15",           # 단타 눌림목 — 15분봉 권장
+    "vp_ema_period": 9,                   # 9 EMA (사용자 정의)
+    "vp_chop_lookback": 20,               # 횡보 판정 윈도우
+    "vp_chop_max_crosses": 4,             # N봉 동안 VWAP 교차 횟수 ≥ 이 값 → SKIP
+    "vp_pullback_band_pct": 1.0,          # 현재가 ≤ EMA × (1+밴드%) 이내여야 눌림목으로 인정
+    "vp_pullback_window": 5,              # 직전 N봉 안에 EMA 터치 흔적 확인
+    "vp_pullback_touch_band_pct": 0.3,    # 터치 판정 폭 (low ≤ EMA×1.003)
+    "vp_max_distance_pct": 3.0,           # VWAP 위 거리 상한 (과확장 회피)
+    "vp_upper_share_max": 0.30,           # 현재가 위쪽 거래량 비중 ≤ 0.30 = 매물대 비어있음
+    "vp_volume_profile_lookback": 50,     # 매물대 분석 윈도우 (15분 × 50 = 12.5h)
+    "vp_vwap_uptrend_lookback": 10,       # VWAP 우상향 판정 (10봉 전 대비)
+    "vp_min_volume_ratio": 0.8,           # 현재봉 거래량 / 20봉 평균 ≥ 0.8
 
     # ─── VS 파라미터 (Volume Spike, 섹터 로테이션/급등 포착) ───
     # 학술: Jegadeesh-Titman momentum(1993) + Liu-Tsyvinski(2022) crypto 단기 autocorrelation

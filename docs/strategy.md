@@ -2,7 +2,7 @@
 
 ## 개요
 
-Upbit Trading System은 **3종 전략 앙상블**을 사용합니다. 각 전략은 독립적으로 시그널을 생성하며, 레짐에 따라 활성 여부가 결정됩니다.
+Upbit Trading System은 **5종 전략 앙상블**(VB / MB / MR / VS / VP)을 사용합니다. 각 전략은 독립적으로 시그널을 생성하며, 레짐에 따라 활성 여부가 결정됩니다. VP는 청산 룰이 EMA 종가 기반이라 다른 전략의 BE/Trailing/STALE/PartialTP 룰과 격리됩니다.
 
 ## 레짐 분류 (BTC 기반)
 
@@ -107,6 +107,43 @@ noise = 1 - |close - open| / (high - low)
 | RSI 과매도 | 30 |
 | VWAP 아래 | 20 |
 | MACD 반등 | 15 |
+
+## 4. VP: VWAP Pullback (눌림목, 롱 전용, 격리 청산)
+
+**근거**: VWAP은 시장 참여자(세력 포함)의 평균 매수가 — 가격이 VWAP 위에 있으면 롱 우위. EMA9는 단기 추세선으로 가격이 되돌아와 지지받는 시점이 가장 R/R 좋은 진입 타점. Volume Profile은 위쪽 매물대가 비어있을수록 저항이 약해 빠른 상승 가능성↑.
+
+### 진입 원칙
+- **방향 (VWAP)**: 현재가 > 세션 VWAP (롱 컨디션). 거리는 VWAP+0~3% (과확장 회피)
+- **눌림목 (EMA9)**: 현재가 ≥ EMA9 + 현재가 ≤ EMA9 × 1.01. 직전 5봉 안에 저가가 EMA9 근처(±0.3%)에 닿은 흔적 (눌림 후 회복 확인)
+- **매물대 (간이 Volume Profile)**: 최근 50봉의 typical price 기준, 현재가 위쪽 누적 거래량 비중 ≤ 30%
+- **VWAP 우상향**: 현재 VWAP > 10봉 전 VWAP
+- **거래량 양호**: 현재봉 거래량 ≥ 20봉 평균 × 0.8
+
+### 회피 (힘겨루기 = SKIP)
+- **VWAP 횡보 게이트**: 최근 20봉 동안 close가 VWAP 위/아래로 4회 이상 교차 시 → 무조건 SKIP
+
+### 청산 (EMA 종가 기반, 다른 전략 룰 비적용)
+- **1차 (EMA 이탈)**: vp_timeframe(15분봉)의 마지막 봉 close < EMA(9) → `SELL_EMA_EXIT`
+- **안전망 SL**: -10% (시스템 catastrophic 보호용. 사실상 EMA 청산이 먼저 발동)
+- BE/Trailing/Partial TP/STALE 룰은 적용하지 않음 (`check_position_signals`에서 strategy=='VP' 분기로 우회)
+
+### 점수 (최대 100)
+| 항목 | 배점 |
+|------|------|
+| VWAP 위 + 거리 적정 (0~3%) | 25 |
+| EMA9 눌림 + 터치 흔적 | 30 (근접만 18) |
+| 위쪽 매물대 비어있음 (≤30%) | 20 |
+| VWAP 우상향 | 15 |
+| 거래량 양호 (≥0.8x) | 10 |
+
+### 격리 보장
+1. `evaluate_vp()` 별도 함수 — 다른 전략 함수 비건드림
+2. `evaluate_symbol()` VP 분기 추가 — 다른 분기 무영향
+3. `check_position_signals()`에서 `strategy=='VP'`면 EMA 청산만 평가, 즉시 `continue`로 다른 룰 스킵
+4. `strategy_overrides.VP` 별도 — `stop_loss_pct=-10`, `take_profit_pct=999`로 기존 SL/TP 사실상 비활성
+
+### 현물 제약
+업비트는 현물만 가능 → **롱 전용**. 사용자 명세의 숏 룰(캔들 몸통이 EMA 위 마감 시 정리)은 미구현.
 
 ## 리스크 게이트 (BUY 실행 전)
 

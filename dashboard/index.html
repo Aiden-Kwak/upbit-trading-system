@@ -49,6 +49,17 @@
   svg.pnl-chart .area-pos { fill:#26a69a22; }
   svg.pnl-chart .area-neg { fill:#ef535022; }
   svg.pnl-chart .zero-line { stroke:var(--text2); stroke-width:1; stroke-dasharray:3,3; opacity:0.5; }
+  svg.pnl-chart .strat-line { stroke-width:1.5; fill:none; opacity:0.85; }
+  svg.pnl-chart .strat-VB { stroke:#f06292; }
+  svg.pnl-chart .strat-MB { stroke:#42a5f5; }
+  svg.pnl-chart .strat-MR { stroke:#ffa726; }
+  svg.pnl-chart .strat-VS { stroke:#ab47bc; }
+  svg.pnl-chart .strat-VP { stroke:#66bb6a; }
+  .pnl-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--text2); margin-top:8px; }
+  .pnl-legend .item { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; }
+  .pnl-legend .item.off { opacity:0.35; }
+  .pnl-legend .swatch { width:14px; height:3px; display:inline-block; border-radius:2px; }
+  .pnl-legend .item b { color:var(--text); }
   .mode-filter { display:flex; gap:6px; align-items:center; }
   .mode-filter label { font-size:11px; color:var(--text2); }
   .mode-btn { padding:4px 10px; background:var(--bg2); border:1px solid var(--border); color:var(--text2); cursor:pointer; border-radius:4px; font-size:11px; }
@@ -77,6 +88,20 @@
   .logic-doc .strat-card { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin:10px 0; }
   .logic-doc .strat-card .strat-name { font-size:14px; font-weight:600; margin-bottom:4px; }
   .logic-doc .strat-card .strat-sub { font-size:12px; color:var(--text2); margin-bottom:8px; }
+  /* 게이트웨이 카드 */
+  .gates-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
+  .gate { background:var(--bg2); border:1px solid var(--border); padding:12px 14px; border-radius:8px; }
+  .gate.blocked { border-color:var(--red); background:#ef535014; }
+  .gate.warn { border-color:var(--amber); background:#ffa72614; }
+  .gate.ok { border-color:#26a69a55; }
+  .gate-head { display:flex; justify-content:space-between; align-items:center; }
+  .gate-name { font-weight:600; font-size:13px; }
+  .gate-status { font-size:11px; font-weight:600; padding:2px 8px; border-radius:4px; }
+  .gate-status.blocked { background:#ef535033; color:var(--red); }
+  .gate-status.warn { background:#ffa72633; color:var(--amber); }
+  .gate-status.ok { background:#26a69a33; color:var(--green); }
+  .gate-threshold { font-size:11px; color:var(--text2); margin-top:6px; font-family:'SF Mono',Monaco,monospace; }
+  .gate-reason { font-size:12px; margin-top:4px; }
 </style>
 </head>
 <body>
@@ -106,6 +131,15 @@
 <div id="overview" class="panel active">
   <div class="stats" id="statsBox"></div>
   <div class="chart-card">
+    <div class="chart-header" style="margin-bottom:12px;">
+      <div>
+        <div class="chart-title">리스크 게이트웨이</div>
+        <div class="chart-summary" id="gatesSummary">—</div>
+      </div>
+    </div>
+    <div class="gates-grid" id="gatesBox"></div>
+  </div>
+  <div class="chart-card">
     <div class="chart-header">
       <div>
         <div class="chart-title">누적 실현 PnL</div>
@@ -120,6 +154,7 @@
       </div>
     </div>
     <svg class="pnl-chart" id="pnlChart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
+    <div class="pnl-legend" id="pnlLegend"></div>
   </div>
   <h3>최근 사이클</h3>
   <div id="recentCycles"></div>
@@ -488,18 +523,32 @@ async function loadPositions() {
 async function loadTrades() {
   const r = await fetch(API + '/api/recent-trades' + modeQ());
   const rows = await r.json();
-  let html = '<table><tr><th>심볼</th><th>전략</th><th>모드</th><th>상태</th><th>진입</th><th>청산</th><th>PnL</th><th>사유</th></tr>';
+  let html = '<table><tr><th>심볼</th><th>전략</th><th>모드</th><th>상태</th><th>진입가</th><th>청산가</th><th>총매출</th><th>PnL</th><th>사유</th></tr>';
   rows.forEach(t => {
     const pnl = t.pnl_pct;
     const modeCls = t.mode === 'live' ? 'negative' : (t.mode === 'paper' ? 'positive' : '');
     const modeLabel = t.mode === 'live' ? '실거래' : (t.mode === 'paper' ? '페이퍼' : (t.mode === 'dry' ? '드라이' : (t.mode||'-')));
+    const partialKrw = t.realized_partial_krw || 0;
+    const finalKrw = t.exit_krw || 0;
+    const totalRevenue = partialKrw + finalKrw;
+    const partialChip = partialKrw > 0
+      ? ` <span class="chip" style="background:#42a5f533;color:var(--blue);font-size:10px">분할</span>`
+      : '';
+    const totalRevStr = t.status === 'closed'
+      ? `${Math.round(totalRevenue).toLocaleString()}원`
+      : '-';
+    const pnlKrw = t.pnl_krw;
+    const pnlKrwStr = pnlKrw != null
+      ? ` <span style="font-size:11px;color:var(--text2)">(${pnlKrw>=0?'+':''}${Math.round(pnlKrw).toLocaleString()})</span>`
+      : '';
     html += `<tr>
       <td class="mono">${t.symbol}</td><td>${t.strategy}</td>
       <td class="${modeCls}" style="font-size:11px">${modeLabel}</td>
       <td>${t.status}</td>
       <td class="mono">${(t.entry_price||0).toLocaleString()}</td>
-      <td class="mono">${(t.exit_price||0).toLocaleString()||'-'}</td>
-      <td class="mono ${pnl>=0?'positive':'negative'}">${pnl!=null?(pnl>=0?'+':'')+pnl.toFixed(2)+'%':'-'}</td>
+      <td class="mono">${(t.exit_price||0).toLocaleString()||'-'}${partialChip}</td>
+      <td class="mono">${totalRevStr}</td>
+      <td class="mono ${pnl>=0?'positive':'negative'}">${pnl!=null?(pnl>=0?'+':'')+pnl.toFixed(2)+'%':'-'}${pnlKrwStr}</td>
       <td style="font-size:11px">${t.exit_reason||t.notes||''}</td>
     </tr>`;
   });
@@ -544,6 +593,38 @@ async function loadCycles() {
   document.getElementById('recentCycles').innerHTML = html;
 }
 
+async function loadGates() {
+  const r = await fetch(API + '/api/gates' + modeQ());
+  const gates = await r.json();
+  let html = '';
+  let nBlocked = 0, nWarn = 0;
+  gates.forEach(g => {
+    const state = g.blocked ? 'blocked' : (g.warn ? 'warn' : 'ok');
+    if (g.blocked) nBlocked++;
+    else if (g.warn) nWarn++;
+    const label = g.blocked ? '🚫 차단' : (g.warn ? '⚠️ 경고' : '✅ 통과');
+    html += `<div class="gate ${state}">
+      <div class="gate-head">
+        <span class="gate-name">${g.name}</span>
+        <span class="gate-status ${state}">${label}</span>
+      </div>
+      <div class="gate-threshold">한도: ${g.threshold}</div>
+      <div class="gate-reason">${g.reason || '-'}</div>
+    </div>`;
+  });
+  document.getElementById('gatesBox').innerHTML = html;
+  const total = gates.length;
+  let summary;
+  if (nBlocked > 0) {
+    summary = `<b class="negative">${nBlocked}개 차단</b> / ${nWarn}개 경고 / ${total - nBlocked - nWarn}개 통과 — <b class="negative">신규 매수 차단 중</b>`;
+  } else if (nWarn > 0) {
+    summary = `<b style="color:var(--amber)">${nWarn}개 경고</b> / ${total - nWarn}개 통과 — 매수 허용 (포지션 축소)`;
+  } else {
+    summary = `<b class="positive">${total}개 모두 통과</b> — 매수 허용`;
+  }
+  document.getElementById('gatesSummary').innerHTML = summary;
+}
+
 async function loadErrors() {
   const r = await fetch(API + '/api/errors');
   const rows = await r.json();
@@ -560,15 +641,21 @@ async function loadErrors() {
 }
 
 let currentRange = 7;
+const STRAT_ORDER = ['VB','MB','MR','VS','VP'];
+const stratVisible = { VB:true, MB:true, MR:true, VS:true, VP:true };
+let _lastPnlPayload = null;  // {rows, byStrat, days}
 
 async function loadPnlHistory(days) {
   currentRange = days;
-  const r = await fetch(API + modeAppend('/api/pnl-history?days=' + days));
-  const rows = await r.json();
-  renderPnlChart(rows, days);
+  const [r1, r2] = await Promise.all([
+    fetch(API + modeAppend('/api/pnl-history?days=' + days)).then(r=>r.json()),
+    fetch(API + modeAppend('/api/pnl-history-by-strategy?days=' + days)).then(r=>r.json()),
+  ]);
+  _lastPnlPayload = { rows: r1, byStrat: r2, days };
+  renderPnlChart(r1, days, r2);
 }
 
-function renderPnlChart(rows, days) {
+function renderPnlChart(rows, days, byStrat) {
   const svg = document.getElementById('pnlChart');
   const W = 800, H = 260, P = { l: 56, r: 16, t: 16, b: 28 };
   const iw = W - P.l - P.r, ih = H - P.t - P.b;
@@ -576,6 +663,7 @@ function renderPnlChart(rows, days) {
   if (!rows.length) {
     svg.innerHTML = `<text x="${W/2}" y="${H/2}" class="axis-label" text-anchor="middle">데이터 없음</text>`;
     document.getElementById('pnlSummary').innerHTML = '기간 내 청산 거래 없음';
+    document.getElementById('pnlLegend').innerHTML = '';
     return;
   }
 
@@ -593,7 +681,16 @@ function renderPnlChart(rows, days) {
   const lastCum = rows[rows.length - 1].cumulative;
   points.push({ t: now, cum: lastCum, symbol: null, pnl: 0 });
 
-  const ys = points.map(p => p.cum);
+  // 전략별 시계열 누적값도 yRange 계산에 포함 (스케일 잘림 방지)
+  const stratYs = [];
+  if (byStrat) {
+    for (const s of STRAT_ORDER) {
+      if (!stratVisible[s]) continue;
+      const arr = byStrat[s] || [];
+      arr.forEach(r => stratYs.push(r.cumulative));
+    }
+  }
+  const ys = points.map(p => p.cum).concat(stratYs);
   const yMin = Math.min(0, ...ys);
   const yMax = Math.max(0, ...ys);
   const yRange = (yMax - yMin) || 1;
@@ -630,10 +727,52 @@ function renderPnlChart(rows, days) {
     xTicks += `<text class="axis-label" x="${px}" y="${H-P.b+16}" text-anchor="middle">${fmtDate(tt, days)}</text>`;
   }
 
+  // 전략별 라인 — 각 전략 누적값을 시간축에 매핑 (시작 0, 마지막 값 연장)
+  let stratPaths = '';
+  const stratTotals = {};
+  if (byStrat) {
+    for (const s of STRAT_ORDER) {
+      if (!stratVisible[s]) continue;
+      const arr = byStrat[s] || [];
+      if (!arr.length) { stratTotals[s] = 0; continue; }
+      const pts = [{ t: start, cum: 0 }];
+      arr.forEach(r => pts.push({ t: parseT(r.t), cum: r.cumulative }));
+      pts.push({ t: now, cum: arr[arr.length-1].cumulative });
+      stratTotals[s] = arr[arr.length-1].cumulative;
+      const dStr = pts.map((p,i) => (i===0?'M':'L') + x(p.t).toFixed(1) + ',' + y(p.cum).toFixed(1)).join(' ');
+      stratPaths += `<path class="strat-line strat-${s}" d="${dStr}"/>`;
+    }
+  }
+
   svg.innerHTML = yTicks + xTicks
     + `<line class="zero-line" x1="${P.l}" y1="${zeroY}" x2="${W-P.r}" y2="${zeroY}"/>`
     + `<path class="${areaCls}" d="${areaD}"/>`
-    + `<path class="${lineCls}" d="${d}"/>`;
+    + `<path class="${lineCls}" d="${d}"/>`
+    + stratPaths;
+
+  // 범례 (클릭 토글)
+  const legend = document.getElementById('pnlLegend');
+  legend.innerHTML = STRAT_ORDER.map(s => {
+    const total = stratTotals[s] || 0;
+    const offCls = stratVisible[s] ? '' : 'off';
+    const cls = total >= 0 ? 'positive' : 'negative';
+    return `<span class="item ${offCls}" data-strat="${s}">`
+         + `<span class="swatch strat-${s}" style="background:var(--strat-${s},transparent)"></span>`
+         + `<span style="color:var(--text)">${s}</span> <b class="${cls}">${fmtKrw(total)}</b></span>`;
+  }).join('');
+  // swatch 색상은 SVG line 클래스와 동일 — inline style 로 동일 색 매핑
+  const swColors = { VB:'#f06292', MB:'#42a5f5', MR:'#ffa726', VS:'#ab47bc', VP:'#66bb6a' };
+  legend.querySelectorAll('.swatch').forEach(el => {
+    const s = el.parentElement.dataset.strat;
+    el.style.background = swColors[s];
+  });
+  legend.querySelectorAll('.item').forEach(el => {
+    el.addEventListener('click', () => {
+      const s = el.dataset.strat;
+      stratVisible[s] = !stratVisible[s];
+      if (_lastPnlPayload) renderPnlChart(_lastPnlPayload.rows, _lastPnlPayload.days, _lastPnlPayload.byStrat);
+    });
+  });
 
   // 요약: 기간 손익 / 거래 수 / 최고 최저
   const trades = rows.length;
@@ -682,7 +821,7 @@ document.querySelectorAll('#modeFilter .mode-btn').forEach(btn => {
 
 async function loadAll() {
   await Promise.all([
-    loadStats(), loadPositions(), loadTrades(), loadSignals(), loadCycles(), loadErrors(),
+    loadStats(), loadGates(), loadPositions(), loadTrades(), loadSignals(), loadCycles(), loadErrors(),
     loadPnlHistory(currentRange),
   ]);
   document.getElementById('lastUpdate').textContent = '업데이트: ' + new Date().toLocaleTimeString();

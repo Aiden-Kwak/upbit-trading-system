@@ -34,10 +34,11 @@ class Handler(BaseHTTPRequestHandler):
             where = self._mode_where(mode)
             self._json(self._fetch(f"SELECT * FROM trades{where} ORDER BY id DESC LIMIT 50"))
         elif path == "/api/cycles":
+            where = self._mode_where(mode)
             self._json(self._fetch(
                 "SELECT cycle_num,status,positions_count,signals_generated,"
-                "buys_filled,sells_executed,today_pnl_pct,btc_regime,duration_sec,created_at "
-                "FROM daemon_cycles ORDER BY id DESC LIMIT 30"))
+                "buys_filled,sells_executed,today_pnl_pct,btc_regime,duration_sec,mode,created_at "
+                f"FROM daemon_cycles{where} ORDER BY id DESC LIMIT 30"))
         elif path == "/api/signals":
             where = self._mode_where(mode)
             self._json(self._fetch(
@@ -59,11 +60,71 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         pass
             self._json(self._pnl_history(days, mode))
+        elif path == "/api/pnl-history-by-strategy":
+            days = 30
+            q = self.path.split("?", 1)[1] if "?" in self.path else ""
+            for kv in q.split("&"):
+                if kv.startswith("days="):
+                    try:
+                        days = int(kv.split("=", 1)[1])
+                    except ValueError:
+                        pass
+            self._json(self._pnl_history_by_strategy(days, mode))
         elif path == "/api/errors":
             self._json(self._fetch(
                 "SELECT source,message,created_at FROM errors ORDER BY id DESC LIMIT 20"))
+        elif path == "/api/gates":
+            self._json(self._gates(mode))
         else:
             self.send_error(404)
+
+    def _gates(self, mode: str = "") -> list[dict]:
+        """리스크 게이트 현재 상태 (개요 탭 시각화용)."""
+        import risk
+        from config import load_config
+        cfg = load_config()
+        m = mode if mode in ("live", "dry", "paper") else None
+        try:
+            _, decisions = risk.run_all_gates(_client, cfg, mode=m)
+        except Exception as e:
+            return [{
+                "name": "게이트 평가 실패", "threshold": "-",
+                "blocked": True, "warn": False,
+                "reason": str(e),
+            }]
+        meta = [
+            {"name": "BTC 레짐",
+             "threshold": (
+                 f"24h ≤ {cfg.get('btc_crash_threshold_pct')}% / "
+                 f"EMA{cfg.get('btc_crisis_ema_short')}<{cfg.get('btc_crisis_ema_long')}"
+             )},
+            {"name": "주간 MDD",
+             "threshold": f"≤ {cfg.get('weekly_mdd_limit_pct')}% (7d rolling)"},
+            {"name": "연속 손절",
+             "threshold": (
+                 f"{cfg.get('cooldown_after_consecutive_losses')}회 / "
+                 f"{cfg.get('consecutive_loss_window_hours')}h"
+             )},
+            {"name": "포지션 한도",
+             "threshold": f"{cfg.get('max_positions')}개"},
+            {"name": "유동성 경고",
+             "threshold": (
+                 f"{cfg.get('thin_liquidity_hours')} 시 → "
+                 f"사이즈 {cfg.get('thin_liquidity_max_pct')}%"
+             )},
+        ]
+        out: list[dict] = []
+        for m_, d in zip(meta, decisions):
+            blocked = (not d.allow) and d.severity == "block"
+            out.append({
+                "name": m_["name"],
+                "threshold": m_["threshold"],
+                "enabled": True,
+                "blocked": blocked,
+                "warn": d.severity == "warn",
+                "reason": d.reason,
+            })
+        return out
 
     def _query_param(self, key: str, default: str = "") -> str:
         if "?" not in self.path:
@@ -164,6 +225,35 @@ class Handler(BaseHTTPRequestHandler):
                 "pnl_krw": pnl,
                 "pnl_pct": r["pnl_pct"],
                 "cumulative": cum,
+            })
+        return out
+
+    def _pnl_history_by_strategy(self, days: int, mode: str = "") -> dict:
+        """전략별 누적 PnL 시계열. {strategy: [{t, cumulative}, ...], ...}"""
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        mode_and = f" AND mode='{mode}'" if mode in ("live", "dry", "paper") else ""
+        with db.get_conn() as c:
+            rows = c.execute(
+                "SELECT COALESCE(exit_time, exit_date || ' 23:59:59') AS t, "
+                "strategy, symbol, pnl_krw FROM trades "
+                "WHERE status='closed' AND pnl_krw IS NOT NULL "
+                f"{mode_and} "
+                "AND COALESCE(exit_time, exit_date || ' 23:59:59') >= ? "
+                "ORDER BY t ASC",
+                (cutoff_str,),
+            ).fetchall()
+        # 전략별 cumulative
+        out: dict[str, list[dict]] = {}
+        cum: dict[str, float] = {}
+        for r in rows:
+            strat = (r["strategy"] or "?").upper()
+            pnl = float(r["pnl_krw"] or 0)
+            cum[strat] = cum.get(strat, 0.0) + pnl
+            out.setdefault(strat, []).append({
+                "t": r["t"], "symbol": r["symbol"],
+                "pnl_krw": pnl, "cumulative": cum[strat],
             })
         return out
 

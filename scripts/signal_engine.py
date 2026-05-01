@@ -1,9 +1,11 @@
-"""시그널 엔진 — 3종 전략 앙상블.
+"""시그널 엔진 — 5종 전략 앙상블.
 
 전략:
 1. VB (Volatility Breakout) — Larry Williams, 일봉 기준
 2. MB (Momentum Breakout) — EMA cross + 거래량 확인 + N-bar 돌파
 3. MR (Mean Reversion) — BB 하단 + RSI 과매도 (횡보 레짐 시만)
+4. VS (Volume Spike) — 거래량 급등 + 일중 추세
+5. VP (VWAP Pullback) — VWAP 위 + EMA9 눌림목 + 위쪽 매물대 비어있음 (롱 전용)
 
 각 전략은 독립적으로 Grade(A/B/C/D) + score 를 산출합니다.
 최종 매수 대상은 Grade A/B 중 전략 우선순위로 선택됩니다.
@@ -13,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 
 import indicators as ta
@@ -61,6 +64,7 @@ def _grade_from_score(pct: int, strategy: str = "VB") -> str:
         "MB": (75, 60, 45),
         "MR": (70, 55, 40),
         "VS": (75, 60, 45),  # spike 40 + 일중 30 + rsi 20 = 기본 90 가능
+        "VP": (75, 60, 45),  # VWAP 25 + 눌림 30 + 매물대 20 + 추세 15 + 거래량 10
     }.get(strategy, (75, 60, 45))
     if pct >= thresholds[0]:
         return "A"
@@ -491,6 +495,158 @@ def evaluate_vs(df_day: pd.DataFrame, cfg: dict, current_price: float) -> Option
     )
 
 
+# ─── 전략 5: VWAP Pullback (눌림목, 롱 전용) ───
+
+def evaluate_vp(df: pd.DataFrame, cfg: dict, current_price: float) -> Optional[Signal]:
+    """VWAP + EMA9 눌림목 + Volume Profile.
+
+    원칙 (사용자 정의):
+      - 진입 = VWAP 위(세력 방향 확인) + 가격이 EMA에서 지지받는 시점(눌림목)
+      - 회피 = VWAP 위/아래 잦은 교차 = 힘겨루기 구간 → 매매안함
+      - 청산 = 캔들 몸통이 EMA 아래에서 마감 (check_position_signals 에서 분기 처리)
+
+    Volume Profile (간이):
+      - 최근 N봉의 typical price 기준 거래량 분포
+      - 현재가 위쪽 누적 거래량 비중이 낮을수록(매물대 비어있음) 빠른 상승 확률↑
+
+    Upbit 현물이므로 롱 전용. (사용자 명세의 숏 룰은 미구현)
+    """
+    period_ema = int(cfg.get("vp_ema_period", 9))
+    chop_lb = int(cfg.get("vp_chop_lookback", 20))
+    chop_max = int(cfg.get("vp_chop_max_crosses", 4))
+    pull_band = float(cfg.get("vp_pullback_band_pct", 1.0))
+    max_dist = float(cfg.get("vp_max_distance_pct", 3.0))
+    upper_max = float(cfg.get("vp_upper_share_max", 0.30))
+    pp_lb = int(cfg.get("vp_volume_profile_lookback", 50))
+    vw_uptrend_lb = int(cfg.get("vp_vwap_uptrend_lookback", 10))
+    min_vol_ratio = float(cfg.get("vp_min_volume_ratio", 0.8))
+    pullback_window = int(cfg.get("vp_pullback_window", 5))
+
+    needed = max(period_ema * 3, chop_lb + 5, pp_lb)
+    if df is None or len(df) < needed:
+        return None
+
+    close = df["close"]
+    vw_series = ta.vwap(df)
+    ema_series = ta.ema(close, period_ema)
+
+    cur_vwap = float(vw_series.iloc[-1])
+    cur_ema = float(ema_series.iloc[-1])
+
+    if cur_vwap <= 0 or cur_ema <= 0:
+        return None
+
+    # 1) VWAP chop 게이트 — 횡보 시 SKIP
+    rc = close.tail(chop_lb).values
+    rv = vw_series.tail(chop_lb).values
+    diffs = rc - rv
+    signs = np.sign(diffs)
+    crosses = int((signs[1:] != signs[:-1]).sum())
+    if crosses >= chop_max:
+        return Signal(
+            symbol="", strategy="VP", action="HOLD", grade="D", score=0,
+            reason=f"VWAP 횡보(교차 {crosses}회 ≥ {chop_max})",
+            details={"vwap_crosses": crosses, "vwap": cur_vwap, "ema": cur_ema},
+        )
+
+    # 2) VWAP 방향성 — 위쪽 + 거리 적정
+    above_vwap = current_price > cur_vwap
+    dist_pct = (current_price - cur_vwap) / cur_vwap * 100
+    dist_ok = above_vwap and 0 < dist_pct <= max_dist
+
+    # 3) EMA9 눌림목 — 현재 EMA 위 + 밴드 안 + 직전 N봉에서 EMA 터치 흔적
+    above_ema = current_price >= cur_ema
+    near_ema = current_price <= cur_ema * (1 + pull_band / 100)
+    pullback_ok = above_ema and near_ema
+
+    recent_low = df["low"].tail(pullback_window)
+    recent_ema = ema_series.tail(pullback_window)
+    touch_band = float(cfg.get("vp_pullback_touch_band_pct", 0.3)) / 100
+    touched = bool((recent_low <= recent_ema * (1 + touch_band)).any())
+
+    # 4) 위쪽 매물대 (Volume Profile 간이)
+    vp_df = df.tail(pp_lb)
+    typical = (vp_df["high"] + vp_df["low"] + vp_df["close"]) / 3
+    total_vol = float(vp_df["volume"].sum())
+    if total_vol > 0:
+        upper_vol = float(vp_df.loc[typical >= current_price, "volume"].sum())
+        upper_share = upper_vol / total_vol
+    else:
+        upper_share = 1.0
+    upper_clear = upper_share <= upper_max
+
+    # 5) VWAP 우상향
+    if len(vw_series) >= vw_uptrend_lb:
+        vwap_uptrend = float(vw_series.iloc[-1]) > float(vw_series.iloc[-vw_uptrend_lb])
+    else:
+        vwap_uptrend = False
+
+    # 6) 거래량 양호
+    vol_avg = float(df["volume"].tail(20).mean())
+    cur_vol = float(df["volume"].iloc[-1])
+    vol_ratio = (cur_vol / vol_avg) if vol_avg > 0 else 0.0
+    vol_ok = vol_ratio >= min_vol_ratio
+
+    # ── 점수 산정 (총 100) ──
+    score = 0
+    reasons: list[str] = []
+
+    if dist_ok:
+        score += 25
+        reasons.append(f"VWAP+{dist_pct:.2f}%")
+    elif above_vwap:
+        reasons.append(f"VWAP+{dist_pct:.2f}%(과확)")
+    else:
+        reasons.append(f"VWAP{dist_pct:+.2f}%")
+
+    if pullback_ok and touched:
+        score += 30
+        reasons.append(f"EMA{period_ema} 눌림복귀")
+    elif pullback_ok:
+        score += 18
+        reasons.append(f"EMA{period_ema} 근접")
+    else:
+        ema_dist = (current_price / cur_ema - 1) * 100
+        reasons.append(f"EMA거리 {ema_dist:+.2f}%")
+
+    if upper_clear:
+        score += 20
+        reasons.append(f"위쪽매물 {upper_share*100:.0f}%")
+    else:
+        reasons.append(f"위쪽매물 {upper_share*100:.0f}%(두꺼움)")
+
+    if vwap_uptrend:
+        score += 15
+        reasons.append("VWAP↑")
+
+    if vol_ok:
+        score += 10
+        reasons.append(f"거래량 {vol_ratio:.1f}x")
+
+    grade = _grade_from_score(score, "VP")
+    ecfg = _effective_cfg(cfg, "VP")
+
+    # 안전망 SL/TP — 1차 청산은 EMA 종가 룰(check_position_signals VP 분기)
+    stop = current_price * (1 + ecfg["stop_loss_pct"] / 100)
+    tp = current_price * (1 + ecfg["take_profit_pct"] / 100)
+
+    # 진입 게이트: 등급 + VWAP 위 + EMA 눌림 정상 (chop은 위에서 이미 거름)
+    action = "BUY" if (grade in ("A", "B") and above_vwap and pullback_ok) else "HOLD"
+
+    return Signal(
+        symbol="", strategy="VP",
+        action=action, grade=grade, score=score,
+        reason=" / ".join(reasons) or "조건 미충족",
+        entry_price=current_price, stop_loss=stop, take_profit=tp,
+        details={
+            "vwap": cur_vwap, "ema": cur_ema,
+            "vwap_dist_pct": dist_pct, "upper_share": upper_share,
+            "vwap_crosses": crosses, "vwap_uptrend": vwap_uptrend,
+            "touched_ema": touched, "vol_ratio": vol_ratio,
+        },
+    )
+
+
 # ─── 메인 진입 평가 ───
 
 def evaluate_symbol(
@@ -549,6 +705,17 @@ def evaluate_symbol(
             s.details["regime"] = regime
             signals.append(s)
 
+    # 5. VP — VWAP Pullback (눌림목, 다른 전략과 격리)
+    if cfg.get("strategy_vp_enabled", False):
+        tf_vp = cfg.get("vp_timeframe", "minute15")
+        df_vp = client.get_ohlcv(symbol, interval=tf_vp, count=120)
+        if df_vp is not None and not df_vp.empty:
+            s = evaluate_vp(df_vp, cfg, current_price)
+            if s:
+                s.symbol = symbol
+                s.details["regime"] = regime
+                signals.append(s)
+
     return signals
 
 
@@ -596,6 +763,39 @@ def check_position_signals(
             "reason": "정상 범위",
         }
 
+        # ★ VP 전용 청산 분기 — 사용자 원칙: 캔들 몸통이 EMA 아래 마감 시 청산
+        # 다른 전략의 BE/PartialTP/Trailing/STALE 룰을 거치지 않고 격리.
+        if strategy == "VP":
+            # 1) 안전망 SL (시스템 안정성)
+            if pnl_pct <= ecfg["stop_loss_pct"]:
+                sig["action"] = "SELL_STOP_LOSS"
+                sig["reason"] = f"손절 {pnl_pct:.2f}% (안전망 {ecfg['stop_loss_pct']}%)"
+                sig["urgency"] = "HIGH"
+                out.append(sig)
+                continue
+            # 2) EMA 종가 청산 — 마지막 봉 close < EMA(vp_ema_period) 이면 정리
+            try:
+                tf_vp = cfg.get("vp_timeframe", "minute15")
+                period_vp = int(cfg.get("vp_ema_period", 9))
+                df_vp = client.get_ohlcv(sym, interval=tf_vp, count=period_vp * 4)
+                if df_vp is not None and len(df_vp) >= period_vp + 2:
+                    last_close = float(df_vp["close"].iloc[-1])
+                    ema_v = float(ta.ema(df_vp["close"], period_vp).iloc[-1])
+                    if last_close < ema_v:
+                        sig["action"] = "SELL_EMA_EXIT"
+                        sig["reason"] = (
+                            f"EMA{period_vp} 이탈: 종가 {last_close:,.4f} < "
+                            f"EMA {ema_v:,.4f} (PnL {pnl_pct:+.2f}%)"
+                        )
+                        sig["urgency"] = "HIGH"
+                        out.append(sig)
+                        continue
+            except Exception:
+                pass
+            # 그 외: HOLD (BE/Trailing 등 다른 룰 일체 적용 안 함 — 격리)
+            out.append(sig)
+            continue
+
         # 1) 손절 (전략별 SL 적용)
         if pnl_pct <= ecfg["stop_loss_pct"]:
             sig["action"] = "SELL_STOP_LOSS"
@@ -605,14 +805,20 @@ def check_position_signals(
             continue
 
         # 2) 브레이크이븐 청산 — 최고점 트리거 도달 후 본전 이탈 시
-        #    max_favorable 가 breakeven_trigger_pct 이상이면 armed 간주
+        #    max_favorable 가 breakeven_trigger_pct 이상이면 armed 간주.
+        #    BE 플로어는 고정 버퍼와 MFE 비례 잠금(피크 이익의 일부 보호) 중 큰 값.
+        #    예: MFE 7% × lock_ratio 0.33 → +2.31% 에서 잠금 (기존 +0.2% 대비 훨씬 유리).
         if cfg.get("breakeven_enabled", True):
             mfe = pos.get("max_favorable") or 0.0
             armed = bool(pos.get("breakeven_armed")) or mfe >= cfg["breakeven_trigger_pct"]
-            if armed and pnl_pct <= cfg.get("breakeven_buffer_pct", 0.2):
+            lock_ratio = float(cfg.get("breakeven_mfe_lock_ratio", 0.33))
+            static_buf = float(cfg.get("breakeven_buffer_pct", 0.2))
+            be_floor = max(static_buf, mfe * lock_ratio)
+            if armed and pnl_pct <= be_floor:
                 sig["action"] = "SELL_BREAKEVEN"
                 sig["reason"] = (
-                    f"본전방어: 최고 +{mfe:.2f}% → 현재 {pnl_pct:+.2f}%"
+                    f"본전방어: 최고 +{mfe:.2f}% → 현재 {pnl_pct:+.2f}% "
+                    f"(잠금선 +{be_floor:.2f}%)"
                 )
                 sig["urgency"] = "HIGH"
                 out.append(sig)
@@ -671,9 +877,15 @@ def check_position_signals(
                     continue
 
         # 6) STALE 후보 — MFE 유예 조건
-        if cfg["stale_exit_enabled"] and entry_date:
+        # entry 경과시간은 created_at(full datetime) 우선, 없으면 entry_date(일자)로 fallback.
+        # 과거엔 entry_date 만 사용해 오전 6시 이후 진입 포지션이 즉시 STALE 로 판정되던 버그가 있었음.
+        entry_ts = pos.get("created_at") or entry_date
+        if cfg["stale_exit_enabled"] and entry_ts:
             try:
-                ed = datetime.strptime(entry_date, "%Y-%m-%d")
+                if len(str(entry_ts)) > 10:
+                    ed = datetime.strptime(str(entry_ts)[:19], "%Y-%m-%d %H:%M:%S")
+                else:
+                    ed = datetime.strptime(str(entry_ts), "%Y-%m-%d")
                 hours = (datetime.now() - ed).total_seconds() / 3600
                 mfe = float(pos.get("max_favorable") or 0.0)
                 grace_pct = float(cfg.get("stale_exit_mfe_grace_pct", 0.5))
