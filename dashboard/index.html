@@ -209,14 +209,14 @@
       <li><b>사전필터</b> — 24h 거래대금 ≥ <code>10억원</code> (유동성 함정 방지)</li>
       <li><b>거래대금 spike 계산</b> — <code>today_value / avg20_value</code> (오늘 거래대금 ÷ 20일 평균)</li>
       <li><b>채널 B 선정</b> — spike ≥ <code>2.0x</code> 중 상위 <code>25개</code></li>
-      <li><b>signal_engine 평가</b> — 4개 전략 계산 → 등급 A/B만 후보</li>
+      <li><b>signal_engine 평가</b> — 5개 전략 계산 → 등급 A/B만 후보</li>
       <li><b>스프레드 검사</b> — 0.35% 초과 시 후보 탈락, 0.2% 초과 시 등급 한단계 강등</li>
     </ol>
 
     <div class="callout"><b>왜 거래량이 아닌 거래대금?</b> 거래량만 보면 가격 폭락 + 거래 폭증(패닉 매도)까지 잡힘. 거래대금(가격×거래량)은 "실제 돈이 몰리는가"를 반영해 진짜 관심을 측정합니다.</div>
 
-    <h2>3. 4가지 전략 (signal_engine)</h2>
-    <p>각 코인에 대해 4개 전략을 독립적으로 평가. 등급 A/B만 매수 후보가 됩니다.</p>
+    <h2>3. 5가지 전략 (signal_engine)</h2>
+    <p>각 코인에 대해 5개 전략을 독립적으로 평가. 등급 A/B만 매수 후보가 됩니다. VP는 청산 룰이 다른 전략과 격리되어 운용됩니다.</p>
 
     <div class="strat-card">
       <div class="strat-name">VB — Volatility Breakout (변동성 돌파)</div>
@@ -258,6 +258,20 @@
       </ul>
     </div>
 
+    <div class="strat-card">
+      <div class="strat-name">VP — VWAP Pullback (눌림목, 격리 청산)</div>
+      <div class="strat-sub">15분봉 단타. 세력 방향(VWAP) + EMA9 지지 시점에 진입. 롱 전용(현물).</div>
+      <ul>
+        <li><b>방향</b>: 현재가 &gt; 세션 VWAP (롱 컨디션). 거리 0~3% (과확장 회피)</li>
+        <li><b>눌림목</b>: 현재가 ≥ EMA9 + EMA9×1.01 이내 + 직전 5봉 안에 EMA 터치 흔적</li>
+        <li><b>매물대 (간이 Volume Profile)</b>: 최근 50봉 typical price 기준, 현재가 위쪽 거래량 비중 ≤ <code>30%</code> = 위쪽 비어있음 → 빠른 상승 가능성↑</li>
+        <li><b>회피</b>: 최근 20봉 동안 가격이 VWAP 위/아래로 <code>4회 이상 교차</code> = 횡보(힘겨루기) → SKIP</li>
+        <li><b>청산</b>: 캔들 몸통(close)이 EMA9 아래에서 마감 → <code>SELL_EMA_EXIT</code> (1차)</li>
+        <li><b>안전망</b>: -10% (catastrophic 보호용. 사실상 EMA 청산이 항상 먼저 발동)</li>
+        <li><b>격리</b>: BE/Trailing/STALE/PartialTP 룰 일체 우회. <code>strategy=='VP'</code> 분기로 다른 전략의 손익절과 충돌 없음</li>
+      </ul>
+    </div>
+
     <h2>4. 포지션 관리 (보유 중 자동 감시)</h2>
     <p>매 사이클(60초)마다 보유 포지션 각각에 대해 6단계 순서로 체크. 앞 단계에서 걸리면 뒷 단계 생략.</p>
 
@@ -266,9 +280,10 @@
     <table>
       <tr><th>전략</th><th>손절선</th></tr>
       <tr><td>VB</td><td>-5.0%</td></tr>
-      <tr><td>MB</td><td>-4.0%</td></tr>
+      <tr><td>MB</td><td>-3.0%</td></tr>
       <tr><td>MR</td><td>-3.0%</td></tr>
       <tr><td>VS</td><td>-3.5%</td></tr>
+      <tr><td>VP</td><td>-10.0% (안전망 — EMA 청산이 1차)</td></tr>
     </table>
 
     <h3>② 본전 방어 (Breakeven)</h3>
