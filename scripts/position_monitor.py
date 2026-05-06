@@ -26,6 +26,7 @@ from typing import Callable, Optional
 import db
 import order_executor
 from order_executor import OrderResult
+from notify import notify_sell
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,27 @@ def _check_one(client, pos: dict, cfg: dict) -> None:
         log.warning(
             f"[Monitor] {sym} 청산 완료 @ {result.price:,.4f} = {result.krw:,.0f}원"
         )
+        # Discord 알림 — 메인 사이클이 아닌 모니터 스레드 청산도 누락 없이 통지.
+        # 분할익절 누적분(realized_partial_krw)까지 반영된 DB 최종값 사용.
+        if cfg.get("discord_notify", True):
+            try:
+                closed = db.get_trade(int(pos["id"])) or {}
+                pnl_krw_final = closed.get("pnl_krw")
+                pnl_pct_final = closed.get("pnl_pct")
+                if pnl_krw_final is None:
+                    entry_krw = float(pos.get("entry_krw") or 0)
+                    realized_partial = float(pos.get("realized_partial_krw") or 0)
+                    pnl_krw_final = (result.krw + realized_partial - entry_krw) if entry_krw else 0
+                    pnl_pct_final = (pnl_krw_final / entry_krw * 100) if entry_krw > 0 else pnl_pct
+                notify_sell(
+                    symbol=sym, price=result.price,
+                    pnl_pct=float(pnl_pct_final),
+                    pnl_krw=float(pnl_krw_final),
+                    reason=reason,
+                    strategy=strat,
+                )
+            except Exception as e:
+                log.warning(f"[Monitor] {sym} Discord 알림 실패: {e}")
 
 
 def start(client, get_cfg: Callable[[], dict], interval: int = 10) -> None:

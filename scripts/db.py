@@ -312,6 +312,13 @@ def close_trade(
         )
 
 
+def get_trade(trade_id: int) -> dict | None:
+    """단일 trade row 조회 (closed/open 무관)."""
+    with get_conn() as c:
+        row = c.execute("SELECT * FROM trades WHERE id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def update_mfe_mae(symbol: str, pnl_pct: float) -> None:
     """열린 포지션의 MFE/MAE 업데이트."""
     with get_conn() as c:

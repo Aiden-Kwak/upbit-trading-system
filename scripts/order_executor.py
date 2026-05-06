@@ -206,17 +206,33 @@ def execute_sell(
             log.warning(f"{sym}: DB 수량({qty}) vs 실보유({actual_holding}) 차이 1%+ "
                         f"— 실보유로 매도")
     else:
-        # paper/dry 가 아니고 실제 보유가 0이면 이미 청산됨 → DB만 마감
+        # paper/dry 가 아니고 실제 보유가 0이면 이미 외부 청산됨 → DB만 마감
+        # ⚠️ exit_krw=0 으로 마감하면 close_trade 가 pnl=-entry_krw (-100%) 로
+        # 잘못 계상하므로, 현재가 × 원수량으로 합리적 추정값 사용.
         if not client.paper and not dry_run:
-            log.warning(f"{sym}: 실보유 0 — 외부 청산된 것으로 간주, DB 마감")
             cur = client.get_current_price(sym)
-            px = float(cur) if isinstance(cur, (int, float)) else 0.0
-            db.close_trade(
-                trade_id=trade_id, exit_price=px, exit_quantity=0,
-                exit_krw=0, exit_reason=f"{reason} (external_sync)",
-                exit_uuid="external",
-            )
-            return OrderResult(False, sym, "sell", reason="실보유 0 → DB만 동기화")
+            px = float(cur) if isinstance(cur, (int, float)) and cur > 0 else 0.0
+            est_qty = qty
+            est_krw = est_qty * px if px > 0 else 0.0
+            if px > 0:
+                log.warning(
+                    f"{sym}: 실보유 0 — 외부 청산 추정 마감. "
+                    f"exit_qty={est_qty:.6f} @ {px:,.4f} = {est_krw:,.0f}원"
+                )
+                db.close_trade(
+                    trade_id=trade_id, exit_price=px, exit_quantity=est_qty,
+                    exit_krw=est_krw,
+                    exit_reason=f"{reason} (external_sync, est)",
+                    exit_uuid="external",
+                )
+            else:
+                # 현재가도 못 가져오는 경우 — 마감 보류, 다음 사이클 재시도
+                log.error(
+                    f"{sym}: 실보유 0 + 현재가 조회 실패 → DB 마감 보류 "
+                    f"(다음 사이클 재시도)"
+                )
+                db.log_error("order", f"external_sync 보류 {sym}: 현재가 조회 실패")
+            return OrderResult(False, sym, "sell", reason="실보유 0 → 추정 마감")
         sell_qty = qty
     # 소수점 8자리
     sell_qty = round(sell_qty, 8)

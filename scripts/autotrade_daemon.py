@@ -68,6 +68,9 @@ class Daemon:
         self.dry_run = dry_run
         self.paper = paper
         self.mode = "paper" if paper else ("dry" if dry_run else "live")
+        # notify.py 푸터가 런타임 모드를 정확히 반영하도록 환경변수 갱신.
+        import os as _os
+        _os.environ["UPBIT_MODE"] = self.mode
         self.interval_sec = interval_sec
         self.cycle_num = 0
         self.last_full_scan = 0.0
@@ -203,6 +206,7 @@ class Daemon:
                                 symbol=sym, tp_level=int(sig["tp_level"]),
                                 price=res.price, qty=res.quantity,
                                 pnl_pct=sig.get("pnl_pct", 0),
+                                strategy=(pos.get("strategy") or "").upper(),
                             )
                     else:
                         log.warning(f"    ❌ 실패: {res.reason}")
@@ -237,13 +241,23 @@ class Daemon:
                     sells_executed += 1
                     log.info(f"    ✅ {res.quantity} @ {res.price:,.0f} = {res.krw:,.0f}원")
                     if self.cfg.get("discord_notify", True):
-                        pnl_pct = sig.get("pnl_pct", 0)
-                        entry_krw = float(pos.get("entry_krw") or 0)
-                        pnl_krw = (res.krw - entry_krw) if entry_krw else 0
+                        # DB의 최종 pnl_krw/pnl_pct 사용 — close_trade 가
+                        # realized_partial_krw 까지 누적 반영하므로 분할익절 후
+                        # 잔량 청산도 정확. 폴백은 직접 계산.
+                        closed = db.get_trade(int(pos["id"])) or {}
+                        pnl_pct_final = closed.get("pnl_pct")
+                        pnl_krw_final = closed.get("pnl_krw")
+                        if pnl_pct_final is None or pnl_krw_final is None:
+                            entry_krw = float(pos.get("entry_krw") or 0)
+                            realized_partial = float(pos.get("realized_partial_krw") or 0)
+                            pnl_krw_final = (res.krw + realized_partial - entry_krw) if entry_krw else 0
+                            pnl_pct_final = (pnl_krw_final / entry_krw * 100) if entry_krw > 0 else sig.get("pnl_pct", 0)
                         notify_sell(
                             symbol=sym, price=res.price,
-                            pnl_pct=pnl_pct, pnl_krw=pnl_krw,
+                            pnl_pct=float(pnl_pct_final),
+                            pnl_krw=float(pnl_krw_final),
                             reason=sig.get("reason", sig["action"]),
+                            strategy=(pos.get("strategy") or "").upper(),
                         )
                 else:
                     log.warning(f"    ❌ 실패: {res.reason}")

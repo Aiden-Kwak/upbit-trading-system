@@ -33,7 +33,37 @@ BLUE = 0x3b82f6
 
 
 def _mode() -> str:
+    # 데몬이 런타임에 설정한 UPBIT_MODE 우선 (live/dry/paper),
+    # 없으면 .env 의 초기값 사용.
     return os.environ.get("UPBIT_MODE", "dry_run").upper().replace("_", " ")
+
+
+def _fmt_price(price: float) -> str:
+    """가격 자릿수 적응 포맷 — KRW BTC(95M)부터 SHIB(0.025)까지 커버."""
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return str(price)
+    if p >= 1000:
+        return f"{p:,.0f}"
+    if p >= 1:
+        return f"{p:,.2f}"
+    if p >= 0.01:
+        return f"{p:,.4f}"
+    return f"{p:,.8f}".rstrip("0").rstrip(".")
+
+
+def _fmt_qty(qty: float) -> str:
+    """수량 자릿수 적응 포맷."""
+    try:
+        q = float(qty)
+    except (TypeError, ValueError):
+        return str(qty)
+    if q >= 1000:
+        return f"{q:,.2f}"
+    if q >= 1:
+        return f"{q:.4f}"
+    return f"{q:.8f}".rstrip("0").rstrip(".")
 
 
 def _post(payload: dict) -> None:
@@ -71,32 +101,36 @@ def notify_buy(
 ) -> None:
     desc = (
         f"**{symbol}** [{strategy}/{grade}]\n"
-        f"가격: `{price:,.2f}` · 금액: `{krw:,.0f}원`\n"
-        f"사유: {reason[:200]}"
+        f"가격: `{_fmt_price(price)}` · 금액: `{krw:,.0f}원`\n"
+        f"사유: {(reason or '')[:300]}"
     )
     _post({"embeds": [_embed("🟢 매수 체결", desc, GREEN)]})
 
 
 def notify_sell(
-    symbol: str, price: float, pnl_pct: float, pnl_krw: float, reason: str
+    symbol: str, price: float, pnl_pct: float, pnl_krw: float, reason: str,
+    strategy: str = "",
 ) -> None:
     icon = "🟢" if pnl_pct >= 0 else "🔴"
     color = GREEN if pnl_pct >= 0 else RED
+    head = f"**{symbol}**" + (f" [{strategy}]" if strategy else "")
     desc = (
-        f"**{symbol}**\n"
-        f"청산가: `{price:,.2f}`\n"
+        f"{head}\n"
+        f"청산가: `{_fmt_price(price)}`\n"
         f"{icon} PnL: **{pnl_pct:+.2f}%** ({pnl_krw:+,.0f}원)\n"
-        f"사유: {reason[:200]}"
+        f"사유: {(reason or '')[:300]}"
     )
     _post({"embeds": [_embed("⚪ 매도 체결", desc, color)]})
 
 
 def notify_partial_tp(
-    symbol: str, tp_level: int, price: float, qty: float, pnl_pct: float
+    symbol: str, tp_level: int, price: float, qty: float, pnl_pct: float,
+    strategy: str = "",
 ) -> None:
+    head = f"**{symbol}**" + (f" [{strategy}]" if strategy else "") + f" TP{tp_level}"
     desc = (
-        f"**{symbol}** TP{tp_level}\n"
-        f"청산가: `{price:,.2f}` · 수량: `{qty:.4f}`\n"
+        f"{head}\n"
+        f"청산가: `{_fmt_price(price)}` · 수량: `{_fmt_qty(qty)}`\n"
         f"PnL: **{pnl_pct:+.2f}%**"
     )
     _post({"embeds": [_embed("💰 분할 익절", desc, BLUE)]})
