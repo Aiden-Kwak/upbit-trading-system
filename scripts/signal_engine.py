@@ -319,7 +319,9 @@ def evaluate_mb(df: pd.DataFrame, cfg: dict, current_price: float) -> Optional[S
     tp_atr = current_price + ecfg.get("tp_atr_multiple", 4.0) * float(atr_val)
     tp = max(tp_pct_floor, tp_atr)
 
-    action = "BUY" if (grade in ("A", "B") and breakout and trend_ok) else "HOLD"
+    # RSI hard-cut — 과열 구간(mb_rsi_max 초과) 진입 차단.
+    # 50건 분석 결과 RSI 70+ 진입의 누적 -10,382원 (승률 38%) → 게이트 격상.
+    action = "BUY" if (grade in ("A", "B") and breakout and trend_ok and rsi_ok) else "HOLD"
 
     return Signal(
         symbol="",
